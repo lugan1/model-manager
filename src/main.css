@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+@theme {
+  --color-forge-primary: #ff9a00;
+  --color-forge-dark: #0b0f19;
+  --color-forge-card: #1f2937;
+  --color-forge-border: #374151;
+}
+
+@layer base {
+  body {
+    @apply bg-[#0b0f19] text-[#e5e7eb] antialiased;
+  }
+}
