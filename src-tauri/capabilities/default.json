@@ -7,11 +7,30 @@
     "core:default",
     "opener:default",
     "dialog:default",
+    "sql:default",
+    {
+      "identifier": "sql:allow-load",
+      "allow": [
+        { "db": "sqlite:D:/ImageGenerator/model-manager/model-manager.db" }
+      ]
+    },
+    {
+      "identifier": "sql:allow-execute",
+      "allow": [
+        { "db": "sqlite:D:/ImageGenerator/model-manager/model-manager.db" }
+      ]
+    },
+    {
+      "identifier": "sql:allow-select",
+      "allow": [
+        { "db": "sqlite:D:/ImageGenerator/model-manager/model-manager.db" }
+      ]
+    },
     {
       "identifier": "opener:allow-open-url",
       "allow": [
-        { "url": "https://civitai.com/models/*" },
-        { "url": "https://civitai.com/*" }
+        { "url": "https://civitai.red/models/*" },
+        { "url": "https://civitai.red/*" }
       ]
     }
   ]
