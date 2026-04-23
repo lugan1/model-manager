@@ -1,32 +1,61 @@
-import { X, Settings, Box, Sparkles, FolderOpen, Key, AlertCircle, Clock, Trash2 } from "lucide-react";
+import { X, Settings, Box, Sparkles, FolderOpen, Key, AlertCircle, Clock, Trash2, Database } from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { ModelType } from "../../types";
+import { useSettings } from "../../contexts/SettingsContext";
+import { useModelContext } from "../../contexts/ModelContext";
+import { DBService } from "../../services/db.service";
+import { useToast } from "../../hooks/useToast";
 
 interface SettingsModalProps {
   show: boolean;
   onClose: () => void;
-  paths: { checkpoint: { scan: string }, lora: { scan: string } };
-  onSelectFolder: (type: 'scan', modelType: ModelType) => void;
-  apiKey: string;
-  onSaveApiKey: (key: string) => void;
-  updateTTL: number;
-  onSaveTTL: (hours: number) => void;
-  onRefresh: () => void;
-  onResetCache: () => void;
 }
 
-export const SettingsModal = ({ 
-  show, 
-  onClose, 
-  paths, 
-  onSelectFolder, 
-  apiKey, 
-  onSaveApiKey, 
-  updateTTL,
-  onSaveTTL,
-  onRefresh,
-  onResetCache
-}: SettingsModalProps) => {
+export const SettingsModal = ({ show, onClose }: SettingsModalProps) => {
+  const { paths, savePaths, apiKey, setApiKey, updateTTL, setUpdateTTL } = useSettings();
+  const { scanFolder, setModels } = useModelContext();
+  const { showNotification } = useToast();
+
   if (!show) return null;
+
+  const handleSelectFolder = async (modelType: ModelType) => {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: `${modelType.toUpperCase()} 스캔 폴더 선택`,
+    });
+
+    if (selected && typeof selected === "string") {
+      const newPaths = { ...paths, [modelType]: { scan: selected } };
+      savePaths(newPaths);
+    }
+  };
+
+  const handleResetCache = async () => {
+    if (confirm("정말로 모든 캐시(해시, 업데이트 정보)를 초기화하시겠습니까?\n로컬 모델 파일은 삭제되지 않습니다.")) {
+      try {
+        await DBService.clearAll();
+        
+        // 현재 모델 목록에서 메타데이터 필드만 초기화 (화면에서 사라지지 않음)
+        setModels(prev => prev.map(m => ({
+          ...m,
+          latestVersionData: undefined,
+          localVersionData: undefined,
+          currentVersion: undefined,
+          currentVersionId: undefined,
+          localPreviewUrl: undefined,
+          localReleaseDate: undefined,
+          hasNewVersion: false,
+          isNotFound: false,
+          currentTask: "IDLE: 캐시 초기화됨"
+        })));
+
+        showNotification("캐시 초기화 완료", "모든 캐시 데이터가 삭제되었습니다. 새로운 정보를 보려면 다시 스캔을 진행해주세요.", "success");
+      } catch (e: any) {
+        showNotification("초기화 실패", e.message || "오류가 발생했습니다.", "error");
+      }
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-[200] bg-black/80 backdrop-blur-xl flex items-center justify-center p-10">
@@ -56,7 +85,7 @@ export const SettingsModal = ({
               <input 
                 type="number" 
                 value={updateTTL} 
-                onChange={(e) => onSaveTTL(Math.max(1, Number(e.target.value)))}
+                onChange={(e) => setUpdateTTL(Math.max(1, Number(e.target.value)))}
                 className="w-24 bg-black/40 border-2 border-[#374151] p-3 rounded-xl text-xl font-black text-white outline-none focus:border-[#ff9a00] transition-colors text-center"
               />
               <span className="text-xl font-bold text-[#9ca3af]">시간 동안 결과를 캐싱합니다.</span>
@@ -71,7 +100,7 @@ export const SettingsModal = ({
             </div>
             <div className="flex bg-black/40 border-2 border-[#374151] rounded-2xl items-center pr-4">
               <div className="flex-1 px-4 py-3 text-sm truncate text-[#9ca3af] font-mono">{paths.checkpoint.scan}</div>
-              <button onClick={() => onSelectFolder('scan', 'checkpoint')} className="p-2 text-[#ff9a00] hover:bg-[#374151] rounded-xl">
+              <button onClick={() => handleSelectFolder('checkpoint')} className="p-2 text-[#ff9a00] hover:bg-[#374151] rounded-xl">
                 <FolderOpen className="size-5" />
               </button>
             </div>
@@ -84,7 +113,20 @@ export const SettingsModal = ({
             </div>
             <div className="flex bg-black/40 border-2 border-[#374151] rounded-2xl items-center pr-4">
               <div className="flex-1 px-4 py-3 text-sm truncate text-[#9ca3af] font-mono">{paths.lora.scan}</div>
-              <button onClick={() => onSelectFolder('scan', 'lora')} className="p-2 text-[#ff9a00] hover:bg-[#374151] rounded-xl">
+              <button onClick={() => handleSelectFolder('lora')} className="p-2 text-[#ff9a00] hover:bg-[#374151] rounded-xl">
+                <FolderOpen className="size-5" />
+              </button>
+            </div>
+          </section>
+
+          <section className="space-y-6 bg-black/20 p-8 rounded-3xl border-2 border-[#374151]">
+            <div className="flex items-center gap-3 text-[#ff9a00]">
+              <Database className="size-6" />
+              <h3 className="text-xl font-black uppercase">LyCORIS 스캔 경로</h3>
+            </div>
+            <div className="flex bg-black/40 border-2 border-[#374151] rounded-2xl items-center pr-4">
+              <div className="flex-1 px-4 py-3 text-sm truncate text-[#9ca3af] font-mono">{paths.lycoris.scan}</div>
+              <button onClick={() => handleSelectFolder('lycoris')} className="p-2 text-[#ff9a00] hover:bg-[#374151] rounded-xl">
                 <FolderOpen className="size-5" />
               </button>
             </div>
@@ -98,7 +140,7 @@ export const SettingsModal = ({
             <input 
               type="password" 
               value={apiKey} 
-              onChange={(e) => onSaveApiKey(e.target.value)} 
+              onChange={(e) => setApiKey(e.target.value)} 
               placeholder="API 키를 입력하세요" 
               className="w-full bg-black/40 border-2 border-[#374151] p-6 rounded-2xl text-xl font-mono text-white outline-none focus:border-[#ff9a00] transition-colors" 
             />
@@ -117,7 +159,7 @@ export const SettingsModal = ({
                 <br /><span className="text-[10px] opacity-50">(경로 설정 및 API 키는 유지됩니다)</span>
               </p>
               <button 
-                onClick={onResetCache}
+                onClick={handleResetCache}
                 className="whitespace-nowrap bg-red-600 hover:bg-red-700 text-white px-8 py-3.5 rounded-2xl font-black text-sm uppercase transition-all shadow-lg active:scale-95 border-none cursor-pointer"
               >
                 캐시 초기화 실행
@@ -126,7 +168,7 @@ export const SettingsModal = ({
           </section>
 
           <button 
-            onClick={() => { onClose(); onRefresh(); }} 
+            onClick={() => { onClose(); scanFolder(); }} 
             className="w-full bg-[#ff9a00] text-[#0b0f19] py-6 rounded-2xl font-black text-2xl uppercase hover:bg-[#e68a00] transition-all"
           >
             저장 및 닫기

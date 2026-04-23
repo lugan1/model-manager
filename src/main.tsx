@@ -3,8 +3,24 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./main.css";
 
+import { SettingsProvider } from "./contexts/SettingsContext";
+import { FilterProvider } from "./contexts/FilterContext";
+import { ModelProvider } from "./contexts/ModelContext";
+import { ToastProvider } from "./contexts/ToastContext";
+import { LogProvider } from "./contexts/LogContext";
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <App />
-  </React.StrictMode>,
+    <LogProvider>
+      <ToastProvider>
+        <SettingsProvider>
+          <FilterProvider>
+            <ModelProvider>
+              <App />
+            </ModelProvider>
+          </FilterProvider>
+        </SettingsProvider>
+      </ToastProvider>
+    </LogProvider>
+  </React.StrictMode>
 );

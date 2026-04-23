@@ -1,4 +1,4 @@
-export type ModelType = "checkpoint" | "lora";
+export type ModelType = "checkpoint" | "lora" | "lycoris";
 
 export interface ModelInfo {
   name: string;
@@ -13,8 +13,18 @@ export interface ModelInfo {
 
 export interface ModelWithStatus extends ModelInfo {
   isOutdated: boolean;
-  latestVersion?: string;
+  baseModel?: string; // 서버 최신 버전의 베이스 모델 (UI 표시용으로 유지하거나 최신 기준)
+  localBaseModel?: string; // 로컬에 실제 있는 파일의 베이스 모델
+  isNewBase?: boolean; // 베이스 모델이 변경되었는지 여부
+  modelName?: string; // Civitai 실제 모델명
+  currentVersion?: string; // 현재 내 파일의 버전명
+  currentVersionId?: number; // 현재 내 파일의 실제 버전 ID
+  localVersionData?: any; // 현재 내 파일의 상세 메타데이터 (Civitai 버전 정보)
+  localPreviewUrl?: string; // 현재 내 파일의 프리뷰 이미지 URL (서버)
+  localReleaseDate?: string; // 현재 내 파일의 릴리즈 날짜
+  latestVersion?: string; // 서버 최신 버전명
   latestVersionId?: number;
+  stableModified?: number; // 정렬 고정용 타임스탬프
   downloadUrl?: string;
   previewUrl?: string;
   latestVersionData?: any;

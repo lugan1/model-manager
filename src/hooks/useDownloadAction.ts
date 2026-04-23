@@ -1,24 +1,36 @@
 import { useCallback } from "react";
 import { ModelWithStatus } from "../types";
-import { api } from "../api";
+import { apiClient } from "../services/api.client";
+import { DBService } from "../services/db.service";
+import { ModelService } from "../services/model.service";
 import { getParentPath } from "../utils";
-import { db } from "../utils/db";
+import { useSettings } from "../contexts/SettingsContext";
+import { useModelContext } from "../contexts/ModelContext";
+import { useToast } from "./useToast";
 
-export const useDownloadAction = (apiKey: string, showNotification: any, scanFolder: (path?: string) => void, clearDownload: (id: string) => void) => {
+export const useDownloadAction = (clearDownload: (id: string) => void) => {
+  const { apiKey } = useSettings();
+  const { patchModel, deselectModel } = useModelContext();
+  const { showNotification } = useToast();
+
   const startDownload = useCallback(async (
     model: ModelWithStatus, 
-    options: { model?: boolean, preview?: boolean, info?: boolean } = { model: true, preview: true, info: true }
+    options: { model?: boolean, preview?: boolean, info?: boolean, isUpdate?: boolean } = { model: true, preview: true, info: true, isUpdate: false }
   ) => {
-    // Guard: Check if model has version info
-    if (!model.latestVersionId || !model.latestVersionData) {
+    const isUpdateMode = options.isUpdate === true;
+    
+    // 업데이트 모드가 아닐 때는 로컬 데이터를 우선 사용 (v1 정보를 받기 위함)
+    // 업데이트 모드일 때는 최신 데이터를 사용 (v2 정보를 받기 위함)
+    const targetMetadata = isUpdateMode ? model.latestVersionData : (model.localVersionData || model.latestVersionData);
+
+    if (!targetMetadata) {
       const errorMsg = "모델 식별 정보가 부족합니다. (업데이트 확인을 먼저 실행해주세요)";
       showNotification("다운로드 불가", errorMsg, "warning");
       throw new Error(errorMsg);
     }
     
-    // API에서 실제 파일명 가져오기 (기본값은 로컬 파일명)
-    const modelFile = model.latestVersionData.files?.find((f: any) => f.type === "Model" && f.primary) 
-                      || model.latestVersionData.files?.find((f: any) => f.type === "Model");
+    const modelFile = targetMetadata.files?.find((f: any) => f.type === "Model" && f.primary) 
+                      || targetMetadata.files?.find((f: any) => f.type === "Model");
     
     const fullFileName = modelFile?.name || model.model_path.split(/[\\\/]/).pop() || "model.safetensors";
     const baseName = fullFileName.replace(/\.(safetensors|ckpt)$/i, "");
@@ -31,85 +43,137 @@ export const useDownloadAction = (apiKey: string, showNotification: any, scanFol
     const configPath = `${downloadPath}\\${baseName}.yaml`;
     
     const downloadId = model.model_path;
-
-    // GIF 및 MP4가 아닌 첫 번째 이미지 찾기
-    const staticImage = model.latestVersionData?.images?.find((img: any) => {
+    const staticImage = targetMetadata.images?.find((img: any) => {
       const url = img.url.toLowerCase();
       return !url.endsWith(".gif") && !url.endsWith(".mp4");
     });
-    const selectedPreviewUrl = staticImage?.url || model.previewUrl;
+    const selectedPreviewUrl = staticImage?.url || (isUpdateMode ? model.previewUrl : (model.localPreviewUrl || model.previewUrl));
+    const downloadUrl = modelFile?.downloadUrl || targetMetadata.downloadUrl;
 
     try {
-      // 1. Download Model File
-      if (options.model && model.downloadUrl) {
+      let finalModelPath = model.model_path;
+      let finalModified = model.modified;
+      
+      if (options.model && downloadUrl) {
         try {
-          await api.downloadFile(downloadId, model.downloadUrl, modelPath, apiKey);
+          const result = await apiClient.invoke<{ path: string, modified: number }>("download_file", { 
+            id: downloadId, 
+            url: downloadUrl, 
+            path: modelPath, 
+            apiKey 
+          });
+          finalModelPath = result.path;
+          finalModified = result.modified;
         } catch (e: any) {
           if (e === "FILE_ALREADY_EXISTS") {
-            showNotification("중복 파일 존재", "동일한 이름의 모델 파일이 이미 있습니다.", "warning");
-            return;
+            if (!isUpdateMode) {
+              showNotification("중복 파일 존재", "동일한 이름의 모델 파일이 이미 있습니다.", "warning");
+              return;
+            }
+          } else {
+            throw e;
           }
-          throw e;
         }
       }
       
-      // 2. Download Preview Image (Optional)
+      let finalPreviewPath = model.preview_path;
       if (options.preview && selectedPreviewUrl) {
-        await api.downloadFile(`${downloadId}_preview`, selectedPreviewUrl, previewPath, apiKey).catch(() => {});
+        const res = await apiClient.invoke<{ path: string, modified: number }>("download_file", { 
+          id: `${downloadId}_preview`, 
+          url: selectedPreviewUrl, 
+          path: previewPath, 
+          apiKey 
+        }).catch(() => undefined);
+        if (res) finalPreviewPath = res.path;
       }
       
-      // 3. Download Config YAML (Optional)
       if (options.model) {
-        const configFile = model.latestVersionData?.files?.find((f: any) => f.type === "Config");
+        const configFile = targetMetadata.files?.find((f: any) => f.type === "Config");
         if (configFile?.downloadUrl) {
-          await api.downloadFile(`${downloadId}_config`, configFile.downloadUrl, configPath, apiKey).catch(() => {});
+          await apiClient.invoke("download_file", { 
+            id: `${downloadId}_config`, 
+            url: configFile.downloadUrl, 
+            path: configPath, 
+            apiKey 
+          }).catch(() => {});
         }
       }
       
-      // 4. Write Info/JSON Files
-      const metadataToSave = model.latestVersionData;
-      if (options.info && metadataToSave) {
-        const metadataStr = JSON.stringify(metadataToSave, null, 2);
-        await api.writeTextFile(infoPath, metadataStr);
-        await api.writeTextFile(jsonPath, metadataStr);
+      if (options.info) {
+        const metadataStr = JSON.stringify(targetMetadata, null, 2);
+        await ModelService.writeTextFile(infoPath, metadataStr);
+        await ModelService.writeTextFile(jsonPath, metadataStr);
       }
 
-      // DB에 정보 저장 (다운로드 성공 시점에 영구 보관)
-      if (metadataToSave) {
-        await db.setUpdateEntry(modelPath, {
-          ...metadataToSave,
-          latestVersion: metadataToSave.name,
-          latestVersionId: metadataToSave.id,
-          hasNewVersion: false, // 다운로드 했으므로 최신임
-          lastReleaseDate: metadataToSave.createdAt,
-          lastFetchedAt: new Date().toISOString(),
-          downloadUrl: metadataToSave.downloadUrl,
-          previewUrl: metadataToSave.images?.[0]?.url,
-          latestVersionData: metadataToSave,
-          modified: Date.now() / 1000 // 현재 시간으로 근사 (스캔 시 갱신됨)
-        });
-      }
-
-      showNotification("다운로드 완료!", options.model ? `${fullFileName}` : "메타데이터 업데이트 완료", "success");
+      const latestName = targetMetadata.name;
       
-      // 다운로드 상태창 제거
+      // 상태 업데이트 데이터 구성
+      const updatedFields: Partial<ModelWithStatus> = {
+        model_path: finalModelPath,
+        preview_path: finalPreviewPath,
+        info_path: options.info ? infoPath : model.info_path,
+        json_path: options.info ? jsonPath : model.json_path,
+        modified: finalModified,
+        currentTask: isUpdateMode ? "IDLE: 업데이트 완료" : "IDLE: 다운로드 완료"
+      };
+
+      // 만약 업데이트 모드였다면, 이제 새 버전이 로컬 버전이 됨
+      if (isUpdateMode) {
+        updatedFields.currentVersion = latestName;
+        updatedFields.currentVersionId = targetMetadata.id;
+        updatedFields.localVersionData = targetMetadata;
+        updatedFields.localBaseModel = targetMetadata.baseModel;
+        updatedFields.localPreviewUrl = targetMetadata.images?.[0]?.url;
+        updatedFields.localReleaseDate = targetMetadata.createdAt;
+        updatedFields.hasNewVersion = false;
+        updatedFields.isNewBase = false;
+      }
+
+      const mergedData = { ...model, ...updatedFields };
+      await DBService.setUpdateEntry(finalModelPath, mergedData);
+      patchModel(model.model_path, updatedFields);
+
+      if (isUpdateMode) {
+        if (finalModelPath !== model.model_path) {
+          const oldBase = model.model_path.replace(/\.(safetensors|ckpt)$/i, "");
+          const targetsToDelete = [
+            model.model_path,
+            model.preview_path,
+            model.info_path,
+            model.json_path,
+            `${oldBase}.civitai.info`,
+            `${oldBase}.civitai.notfound`,
+            `${oldBase}.yaml`
+          ].filter((p): p is string => !!p && p !== finalModelPath && p !== finalPreviewPath);
+
+          if (targetsToDelete.length > 0) {
+            await ModelService.deleteFiles(targetsToDelete);
+            await DBService.deleteEntry(model.model_path);
+            await DBService.deleteHash(model.model_path);
+          }
+        }
+        
+        // 중요: 업데이트 작업이 완료되었으므로 선택 목록에서 제거
+        deselectModel(model.model_path);
+      }
+
+      showNotification(isUpdateMode ? "업데이트 완료!" : "다운로드 완료!", options.model ? `${fullFileName}` : "메타데이터 업데이트 완료", "success");
+      
       clearDownload(downloadId);
       clearDownload(`${downloadId}_preview`);
       clearDownload(`${downloadId}_config`);
 
-      // 해당 모델이 있는 폴더만 부분적으로 로컬 스캔 수행
-      setTimeout(() => scanFolder(downloadPath), 500);
     } catch (e: any) {
-      clearDownload(downloadId); // 에러 시에도 상태창 제거
+      clearDownload(downloadId);
       let subMsg = e.toString();
-      if (subMsg.includes("401")) subMsg = "API 키가 올바르지 않거나 권한이 없습니다.";
+      if (subMsg.includes("401")) subMsg = "API 키가 올바르지 않거나 권한(얼리 억세스 구매 등)이 없습니다.";
       else if (subMsg.includes("404")) subMsg = "파일을 찾을 수 없습니다. (삭제되었을 수 있음)";
       else if (subMsg.includes("timeout")) subMsg = "네트워크 연결 시간이 초과되었습니다.";
       
-      showNotification("다운로드 중 오류 발생", subMsg, "error");
+      showNotification("작업 중 오류 발생", subMsg, "error");
       throw e;
     }
-  }, [apiKey, showNotification, scanFolder, clearDownload]);
+  }, [apiKey, showNotification, patchModel, deselectModel, clearDownload]);
 
   return { startDownload };
 };

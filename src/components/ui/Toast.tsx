@@ -36,8 +36,8 @@ export const Toast = ({ toast, onClose }: ToastProps) => {
   const style = config[toast.type];
 
   return (
-    <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[300] animate-in fade-in slide-in-from-bottom-10 duration-500">
-      <div className={`border-2 p-6 rounded-3xl shadow-2xl flex items-center gap-6 min-w-[500px] backdrop-blur-xl ${style.bg} ${style.border}`}>
+    <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[9999] animate-in fade-in slide-in-from-bottom-10 duration-500">
+      <div className={`border-2 p-6 rounded-3xl shadow-[0_20px_50px_rgba(0,0,0,0.5)] flex items-center gap-6 min-w-[500px] backdrop-blur-2xl ${style.bg} ${style.border}`}>
         <div className={`p-3 rounded-2xl ${style.iconBg}`}>
           {style.icon}
         </div>
