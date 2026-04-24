@@ -60,16 +60,15 @@ export const useDownloadAction = (clearDownload: (id: string) => void) => {
             id: downloadId, 
             url: downloadUrl, 
             path: modelPath, 
-            apiKey 
+            apiKey,
+            overwrite: isUpdateMode
           });
           finalModelPath = result.path;
           finalModified = result.modified;
         } catch (e: any) {
           if (e === "FILE_ALREADY_EXISTS") {
-            if (!isUpdateMode) {
-              showNotification("중복 파일 존재", "동일한 이름의 모델 파일이 이미 있습니다.", "warning");
-              return;
-            }
+            showNotification("중복 파일 존재", "동일한 이름의 모델 파일이 이미 있습니다.", "warning");
+            return;
           } else {
             throw e;
           }
@@ -82,7 +81,8 @@ export const useDownloadAction = (clearDownload: (id: string) => void) => {
           id: `${downloadId}_preview`, 
           url: selectedPreviewUrl, 
           path: previewPath, 
-          apiKey 
+          apiKey,
+          overwrite: true
         }).catch(() => undefined);
         if (res) finalPreviewPath = res.path;
       }
@@ -94,7 +94,8 @@ export const useDownloadAction = (clearDownload: (id: string) => void) => {
             id: `${downloadId}_config`, 
             url: configFile.downloadUrl, 
             path: configPath, 
-            apiKey 
+            apiKey,
+            overwrite: true
           }).catch(() => {});
         }
       }
@@ -134,23 +135,34 @@ export const useDownloadAction = (clearDownload: (id: string) => void) => {
       patchModel(model.model_path, updatedFields);
 
       if (isUpdateMode) {
-        if (finalModelPath !== model.model_path) {
-          const oldBase = model.model_path.replace(/\.(safetensors|ckpt)$/i, "");
-          const targetsToDelete = [
-            model.model_path,
-            model.preview_path,
-            model.info_path,
-            model.json_path,
-            `${oldBase}.civitai.info`,
-            `${oldBase}.civitai.notfound`,
-            `${oldBase}.yaml`
-          ].filter((p): p is string => !!p && p !== finalModelPath && p !== finalPreviewPath);
+        const oldBase = model.model_path.replace(/\.(safetensors|ckpt)$/i, "");
+        const targetsToDelete: string[] = [];
 
-          if (targetsToDelete.length > 0) {
-            await ModelService.deleteFiles(targetsToDelete);
-            await DBService.deleteEntry(model.model_path);
-            await DBService.deleteHash(model.model_path);
-          }
+        // 1. 모델 경로가 변경된 경우 기존 모델 및 관련 메타데이터 파일 삭제
+        if (finalModelPath !== model.model_path) {
+          targetsToDelete.push(model.model_path);
+          if (model.info_path) targetsToDelete.push(model.info_path);
+          if (model.json_path) targetsToDelete.push(model.json_path);
+          targetsToDelete.push(`${oldBase}.civitai.info`);
+          targetsToDelete.push(`${oldBase}.civitai.notfound`);
+          targetsToDelete.push(`${oldBase}.yaml`);
+          
+          await DBService.deleteEntry(model.model_path);
+          await DBService.deleteHash(model.model_path);
+        }
+
+        // 2. 프리뷰 이미지 경로가 변경된 경우 (모델 경로 변경 여부와 독립적)
+        if (model.preview_path && finalPreviewPath !== model.preview_path) {
+          targetsToDelete.push(model.preview_path);
+        }
+
+        // 중복 제거 및 새로 받은 파일 보호
+        const uniqueTargets = [...new Set(targetsToDelete)].filter(
+          (p): p is string => !!p && p !== finalModelPath && p !== finalPreviewPath
+        );
+
+        if (uniqueTargets.length > 0) {
+          await ModelService.deleteFiles(uniqueTargets);
         }
         
         // 중요: 업데이트 작업이 완료되었으므로 선택 목록에서 제거

@@ -1,16 +1,16 @@
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
-use walkdir::WalkDir;
+use jwalk::WalkDir;
 use tauri::command;
 use crate::models::ModelInfo;
 
 #[command]
 pub async fn scan_models(path: String) -> Result<Vec<ModelInfo>, String> {
     let mut models = Vec::new();
-    let walker = WalkDir::new(&path).into_iter();
 
-    for entry in walker.filter_map(|e| e.ok()) {
+    // jwalk를 사용하여 병렬 탐색 수행
+    for entry in WalkDir::new(&path).into_iter().filter_map(|e| e.ok()) {
         let path_buf = entry.path();
         if path_buf.is_file() {
             if let Some(ext) = path_buf.extension() {
@@ -19,6 +19,7 @@ pub async fn scan_models(path: String) -> Result<Vec<ModelInfo>, String> {
                     let file_name = path_buf.file_stem().unwrap().to_string_lossy().to_string();
                     let parent = path_buf.parent().unwrap();
                     
+                    // 프리뷰 확장자 체크
                     let preview_extensions = ["preview.png", "preview.jpg", "preview.jpeg", "preview.webp", "png", "jpg", "jpeg", "webp"];
                     let mut preview_path = None;
                     for p_ext in preview_extensions {
@@ -32,7 +33,7 @@ pub async fn scan_models(path: String) -> Result<Vec<ModelInfo>, String> {
                     let info_path = parent.join(format!("{}.civitai.info", file_name));
                     let json_path = parent.join(format!("{}.json", file_name));
 
-                    let metadata = fs::metadata(path_buf).map_err(|e| e.to_string())?;
+                    let metadata = fs::metadata(&path_buf).map_err(|e| e.to_string())?;
                     let modified = metadata.modified()
                         .unwrap_or(SystemTime::now())
                         .duration_since(SystemTime::UNIX_EPOCH)

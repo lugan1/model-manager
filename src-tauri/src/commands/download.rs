@@ -13,6 +13,7 @@ pub async fn download_file(
     url: String,
     path: String,
     api_key: Option<String>,
+    overwrite: Option<bool>,
 ) -> Result<DownloadResult, String> {
     let client = reqwest::Client::new();
     let mut request = client.get(url);
@@ -42,7 +43,7 @@ pub async fn download_file(
     }
 
     let target_path = Path::new(&final_path);
-    if target_path.exists() {
+    if target_path.exists() && !overwrite.unwrap_or(false) {
         return Err("FILE_ALREADY_EXISTS".to_string());
     }
 

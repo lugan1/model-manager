@@ -13,7 +13,8 @@ pub fn run() {
         .setup(|app| {
             // 메인 윈도우를 가져와서 준비가 되면 표시
             if let Some(window) = app.get_webview_window("main") {
-                window.show().unwrap();
+                window.maximize().unwrap(); // 먼저 최대화
+                window.show().unwrap();     // 그 다음 표시
             }
             Ok(())
         })

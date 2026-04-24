@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { FolderOpen } from "lucide-react";
 import { Header } from "./Header";
 import { Sidebar } from "./Sidebar";
@@ -24,6 +24,7 @@ export const MainLayout: React.FC = () => {
   
   const [showSettings, setShowSettings] = useState(false);
   const [showLogViewer, setShowLogViewer] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(30);
 
   // 필터링 및 정렬 로직
   const filteredModels = useMemo(() => {
@@ -81,14 +82,34 @@ export const MainLayout: React.FC = () => {
     return result;
   }, [models, isScanning, deferredSearchTerm, sortBy, sortOrder, showOnlyOutdated, showOnlyDuplicates, selectedDirPath]);
 
-  // 그룹화 로직
+  // 점진적 렌더링 로직: 목록이 바뀌면 초기화 후 점진적으로 증가
+  useEffect(() => {
+    setVisibleCount(30);
+    
+    if (filteredModels.length > 30) {
+      const interval = setInterval(() => {
+        setVisibleCount(prev => {
+          if (prev >= filteredModels.length) {
+            clearInterval(interval);
+            return prev;
+          }
+          return prev + 30;
+        });
+      }, 100);
+      return () => clearInterval(interval);
+    }
+  }, [filteredModels.length, deferredSearchTerm, selectedDirPath, sortBy, sortOrder]);
+
+  // 그룹화 로직 (visibleCount 적용)
   const groupedModels = useMemo(() => {
-    if (!selectedDirPath) return { "": filteredModels };
+    const visibleModels = filteredModels.slice(0, visibleCount);
+    
+    if (!selectedDirPath) return { "": visibleModels };
 
     const normalizedBase = normalizePath(selectedDirPath);
     const groups: Record<string, ModelWithStatus[]> = {};
 
-    filteredModels.forEach(m => {
+    visibleModels.forEach(m => {
       const normalizedPath = normalizePath(m.model_path);
       const relative = normalizedPath.substring(normalizedBase.length).replace(/^[\\\/]/, "");
       const parts = relative.split(/[\\\/]/);
@@ -110,7 +131,7 @@ export const MainLayout: React.FC = () => {
     });
 
     return sortedGroups;
-  }, [filteredModels, selectedDirPath]);
+  }, [filteredModels, visibleCount, selectedDirPath]);
 
   // 통계 계산
   const stats = useMemo(() => {
@@ -186,7 +207,7 @@ export const MainLayout: React.FC = () => {
                         <div className="flex items-center gap-3 px-6 py-2 bg-[#1f2937] border-2 border-[#374151] rounded-2xl shadow-xl">
                           <FolderOpen className="size-5 text-[#ff9a00]" />
                           <span className="text-xl font-black uppercase tracking-widest text-[#ff9a00]">
-                            {groupName === "." ? "Root" : groupName}
+                            {groupName === "." ? (selectedDirPath?.split(/[\\\/]/).pop() || "Root") : groupName}
                           </span>
                           <span className="bg-black/40 px-3 py-1 rounded-lg text-xs font-bold text-[#9ca3af]">
                             {groupModels.length}
