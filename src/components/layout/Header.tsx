@@ -1,9 +1,9 @@
-import { Search, Layers, Box, Sparkles, RefreshCw, Settings, EyeOff, Copy, ArrowUpAz, Database, Clock, ScrollText, ArrowRight } from "lucide-react";
+import { Search, Layers, Box, Sparkles, RefreshCw, Settings, EyeOff, Copy, ArrowUpAz, Database, Clock, ScrollText, ArrowRight, Pause, Play, XCircle } from "lucide-react";
 import { useSettings } from "../../contexts/SettingsContext";
 import { useFilter } from "../../contexts/FilterContext";
 import { useModelContext } from "../../contexts/ModelContext";
 import { useErrorLogs } from "../../hooks/useErrorLogs";
-import { useBatchUpdate } from "../../hooks/useBatchUpdate";
+import { useBatchUpdateContext } from "../../contexts/BatchUpdateContext";
 import { Tooltip } from "../ui/Tooltip";
 import { useMemo } from "react";
 import { useToast } from "../../hooks/useToast";
@@ -20,10 +20,13 @@ export const Header = ({ onShowSettings, onShowLogs }: HeaderProps) => {
     showOnlyDuplicates, setShowOnlyDuplicates, selectedDirPath 
   } = useFilter();
   
-  const { models, scanFolder } = useModelContext();
-  const { logs, addLog } = useErrorLogs();
+  const { models, scanFolder, selectedModels } = useModelContext();
+  const { logs } = useErrorLogs();
   const { showNotification } = useToast();
-  const { isUpdating, updateStatus, updateLatestVersionsInParallel } = useBatchUpdate(addLog);
+  const { 
+    isUpdating, isPaused, updateStatus, updateLatestVersionsInParallel,
+    pauseBatchUpdate, resumeBatchUpdate, cancelBatchUpdate 
+  } = useBatchUpdateContext();
 
   // 현재 선택된 경로 아래에 있는 모델들만 필터링
   const modelsInSelectedDir = useMemo(() => {
@@ -32,10 +35,23 @@ export const Header = ({ onShowSettings, onShowLogs }: HeaderProps) => {
     return models.filter(m => m.model_path.toLowerCase().startsWith(normalizedSelected));
   }, [models, selectedDirPath]);
 
+  // 업데이트 대상 결정 (선택된 모델이 있으면 그것만, 없으면 폴더 전체)
+  const updateTargets = useMemo(() => {
+    if (selectedModels.size > 0) {
+      return models.filter(m => selectedModels.has(m.model_path));
+    }
+    return modelsInSelectedDir;
+  }, [models, modelsInSelectedDir, selectedModels]);
+
   const handleRefresh = async (checkUpdates = false, forceRefresh = false) => {
     if (checkUpdates) {
-      await updateLatestVersionsInParallel(modelsInSelectedDir, forceRefresh);
-      showNotification("업데이트 확인 완료", `${modelsInSelectedDir.length}개의 모델 정보를 확인했습니다.`, "success");
+      const targets = updateTargets;
+      if (targets.length === 0) {
+        showNotification("알림", "업데이트 확인할 모델이 없습니다.", "warning");
+        return;
+      }
+      await updateLatestVersionsInParallel(targets, forceRefresh);
+      showNotification("업데이트 확인 완료", `${targets.length}개의 모델 정보를 확인했습니다.`, "success");
     } else {
       await scanFolder();
     }
@@ -132,7 +148,7 @@ export const Header = ({ onShowSettings, onShowLogs }: HeaderProps) => {
               )}
             </button>
           </Tooltip>
-          <Tooltip position="bottom" content={`현재 폴더(${modelsInSelectedDir.length}개) 최신 정보 확인 (Shift + 클릭: 강제)`}>
+          <Tooltip position="bottom" content={`${selectedModels.size > 0 ? `선택된 모델(${selectedModels.size}개)` : `현재 폴더(${modelsInSelectedDir.length}개)`} 최신 정보 확인 (Shift + 클릭: 강제)`}>
             <button 
               onClick={(e) => handleRefresh(true, e.shiftKey)} 
               disabled={isUpdating}
@@ -165,7 +181,7 @@ export const Header = ({ onShowSettings, onShowLogs }: HeaderProps) => {
         {isUpdating && (
           <div className="absolute bottom-0 left-0 w-full h-1 bg-black/20 overflow-hidden">
             <div 
-              className="h-full bg-cyan-400 transition-all duration-300 shadow-[0_0_10px_rgba(34,211,238,0.8)]" 
+              className={`h-full ${isPaused ? 'bg-amber-400' : 'bg-cyan-400'} transition-all duration-300 shadow-[0_0_10px_rgba(34,211,238,0.8)]`} 
               style={{ width: `${progressPercent}%` }}
             />
           </div>
@@ -176,19 +192,45 @@ export const Header = ({ onShowSettings, onShowLogs }: HeaderProps) => {
       {isUpdating && (
         <div className="bg-[#0b0f19]/90 backdrop-blur-md border-b border-cyan-900/30 px-10 py-2 flex items-center justify-between z-30 animate-in slide-in-from-top-4 duration-300">
           <div className="flex items-center gap-4 min-w-0">
-            <div className="flex items-center gap-2 px-3 py-1 bg-cyan-500/10 rounded-lg border border-cyan-500/20">
-              <RefreshCw className="size-3 text-cyan-400 animate-spin" />
-              <span className="text-[10px] font-black text-cyan-400 uppercase tracking-widest">Checking Updates</span>
+            <div className={`flex items-center gap-2 px-3 py-1 ${isPaused ? 'bg-amber-500/10 border-amber-500/20' : 'bg-cyan-500/10 border-cyan-500/20'} rounded-lg border`}>
+              {isPaused ? (
+                <Pause className="size-3 text-amber-400" />
+              ) : (
+                <RefreshCw className="size-3 text-cyan-400 animate-spin" />
+              )}
+              <span className={`text-[10px] font-black ${isPaused ? 'text-amber-400' : 'text-cyan-400'} uppercase tracking-widest`}>
+                {isPaused ? 'Paused' : 'Checking Updates'}
+              </span>
             </div>
             <div className="flex items-center gap-3 min-w-0">
               <ArrowRight className="size-3 text-[#4b5563]" />
               <span className="text-xs font-bold text-white truncate max-w-md">{updateStatus.name}</span>
-              <span className="text-[10px] font-medium text-[#9ca3af] italic truncate">{updateStatus.task}</span>
+              <span className="text-[10px] font-medium text-[#9ca3af] italic truncate">
+                {isPaused ? '(일시정지됨)' : updateStatus.task}
+              </span>
             </div>
           </div>
-          <div className="flex items-center gap-4 shrink-0">
+          <div className="flex items-center gap-6 shrink-0">
+             <div className="flex items-center gap-2 border-r border-[#374151] pr-6">
+                <Tooltip position="bottom" content={isPaused ? "재개" : "일시정지"}>
+                  <button 
+                    onClick={isPaused ? resumeBatchUpdate : pauseBatchUpdate}
+                    className={`p-2 rounded-lg transition-all ${isPaused ? 'bg-green-600/20 text-green-400 hover:bg-green-600/30' : 'bg-amber-600/20 text-amber-400 hover:bg-amber-600/30'}`}
+                  >
+                    {isPaused ? <Play className="size-5" /> : <Pause className="size-5" />}
+                  </button>
+                </Tooltip>
+                <Tooltip position="bottom" content="중단">
+                  <button 
+                    onClick={cancelBatchUpdate}
+                    className="p-2 bg-red-600/20 text-red-400 hover:bg-red-600/30 rounded-lg transition-all"
+                  >
+                    <XCircle className="size-5" />
+                  </button>
+                </Tooltip>
+             </div>
              <div className="text-right">
-                <span className="text-sm font-black text-cyan-400 font-mono">{progressPercent}%</span>
+                <span className={`text-sm font-black ${isPaused ? 'text-amber-400' : 'text-cyan-400'} font-mono`}>{progressPercent}%</span>
                 <span className="text-[10px] font-bold text-[#4b5563] ml-2 uppercase tracking-tighter">{updateStatus.current} / {updateStatus.total}</span>
               </div>
           </div>

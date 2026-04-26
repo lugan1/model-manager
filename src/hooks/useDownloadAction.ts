@@ -54,9 +54,9 @@ export const useDownloadAction = (clearDownload: (id: string) => void) => {
     const downloadId = model.model_path;
     const staticImage = targetMetadata.images?.find((img: any) => {
       const url = img.url.toLowerCase();
-      return !url.endsWith(".gif") && !url.endsWith(".mp4");
+      return !url.endsWith(".gif") && !url.endsWith(".mp4") && !url.endsWith(".webm");
     });
-    const selectedPreviewUrl = staticImage?.url || (isUpdateMode ? model.previewUrl : (model.localPreviewUrl || model.previewUrl));
+    const selectedPreviewUrl = staticImage?.url || targetMetadata.images?.[0]?.url || (isUpdateMode ? model.previewUrl : (model.localPreviewUrl || model.previewUrl));
     const downloadUrl = modelFile?.downloadUrl || targetMetadata.downloadUrl;
 
     try {

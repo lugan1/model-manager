@@ -40,3 +40,27 @@ export const stripHtml = (html: string): string => {
     .replace(/&#39;/gi, "'")
     .trim();
 };
+
+/**
+ * 에러 객체를 표준화된 메시지로 변환합니다.
+ */
+export const normalizeError = (err: any): string => {
+  if (!err) return "알 수 없는 오류";
+  if (typeof err === "string") return err;
+  
+  // Tauri 에러 또는 HTTP 에러 객체
+  if (err.message) return err.message;
+  if (err.status) {
+    if (err.status === 408) return "요청 시간 초과 (네트워크 불안정)";
+    if (err.status === 429) return "Civitai 요청 제한 (잠시 후 시도)";
+    if (err.status === 404) return "서버 정보 없음 (404)";
+    if (err.status >= 500) return "Civitai 서버 오류";
+    return `HTTP 에러: ${err.status}`;
+  }
+  
+  try {
+    return JSON.stringify(err);
+  } catch (e) {
+    return "분석할 수 없는 오류";
+  }
+};

@@ -44,9 +44,15 @@ export class DBService {
             info_path TEXT,
             json_path TEXT,
             is_not_found BOOLEAN DEFAULT 0,
-            image_fetch_failed BOOLEAN DEFAULT 0
+            image_fetch_failed BOOLEAN DEFAULT 0,
+            has_new_version BOOLEAN DEFAULT 0,
+            is_new_base BOOLEAN DEFAULT 0
           );
         `);
+
+        // 마이그레이션: 기존 테이블에 컬럼이 없는 경우 추가
+        try { await db.execute("ALTER TABLE local_files ADD COLUMN has_new_version BOOLEAN DEFAULT 0"); } catch(e) {}
+        try { await db.execute("ALTER TABLE local_files ADD COLUMN is_new_base BOOLEAN DEFAULT 0"); } catch(e) {}
 
         // 2. Civitai 모델 정보
         await db.execute(`
@@ -172,12 +178,15 @@ export class DBService {
     json_path?: string | null;
     isNotFound?: boolean;
     imageFetchFailed?: boolean;
+    hasNewVersion?: boolean;
+    isNewBase?: boolean;
   }) {
     const db = await this.getDB();
+    console.log(`[DBService] Upserting local file: ${params.path}`, params);
     await db.execute(
       `INSERT OR REPLACE INTO local_files 
-       (path, hash, version_id, modified, preview_path, info_path, json_path, is_not_found, image_fetch_failed) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+       (path, hash, version_id, modified, preview_path, info_path, json_path, is_not_found, image_fetch_failed, has_new_version, is_new_base) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [
         params.path, 
         params.hash || null, 
@@ -187,13 +196,16 @@ export class DBService {
         params.info_path || null, 
         params.json_path || null, 
         params.isNotFound ? 1 : 0,
-        params.imageFetchFailed ? 1 : 0
+        params.imageFetchFailed ? 1 : 0,
+        params.hasNewVersion ? 1 : 0,
+        params.isNewBase ? 1 : 0
       ]
     );
   }
 
   static async deleteLocalFile(path: string) {
     const db = await this.getDB();
+    console.log(`[DBService] Deleting local file: ${path}`);
     await db.execute("DELETE FROM local_files WHERE path = $1", [path]);
   }
 
@@ -216,6 +228,7 @@ export class DBService {
   static async upsertCivitaiVersion(v: CivitaiModelVersion, lookupHash?: string) {
     const db = await this.getDB();
     const cleanDescription = v.description ? stripHtml(v.description) : null;
+    console.log(`[DBService] Upserting version: ${v.id} (${v.name})`);
     await db.execute(
       `INSERT OR REPLACE INTO civitai_versions 
        (id, model_id, name, createdAt, updatedAt, publishedAt, status, baseModel, baseModelType, description, availability, nsfwLevel, stat_downloadCount, stat_thumbsUpCount, stat_thumbsDownCount, downloadUrl, lookup_hash)
@@ -226,14 +239,14 @@ export class DBService {
     // 추가: 버전 데이터 안에 모델 정보(설명 등)가 포함되어 있다면 civitai_models 테이블도 함께 갱신
     if (v.model) {
       const cleanModelDesc = v.model.description ? stripHtml(v.model.description) : "";
-      // 이미 상세 정보가 있을 수 있으므로 필드별로 업데이트하거나 새로 삽입
+      console.log(`[DBService] Upserting model info from version: ${v.modelId}`);
       await db.execute(
         `INSERT INTO civitai_models (id, name, description, type, nsfw, userId, last_fetched_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT(id) DO UPDATE SET 
            name = excluded.name,
            description = CASE 
-             WHEN excluded.description != '' THEN excluded.description 
+             WHEN excluded.description != '' AND excluded.description IS NOT NULL THEN excluded.description 
              ELSE description 
            END,
            last_fetched_at = excluded.last_fetched_at`,
@@ -245,7 +258,7 @@ export class DBService {
     await db.execute("DELETE FROM civitai_version_words WHERE version_id = $1", [v.id]);
     if (v.trainedWords && v.trainedWords.length > 0) {
       for (const word of v.trainedWords) {
-        await db.execute("INSERT INTO civitai_version_words (version_id, word) VALUES ($1, $2)", [v.id, word]);
+        await db.execute("INSERT OR REPLACE INTO civitai_version_words (version_id, word) VALUES ($1, $2)", [v.id, word]);
       }
     }
 
@@ -254,7 +267,7 @@ export class DBService {
     if (v.files && v.files.length > 0) {
       for (const f of v.files) {
         await db.execute(
-          `INSERT INTO civitai_files 
+          `INSERT OR REPLACE INTO civitai_files 
            (id, version_id, sizeKB, name, type, pickleScanResult, pickleScanMessage, virusScanResult, scannedAt, meta_format, meta_size, meta_fp, hash_AutoV1, hash_AutoV2, hash_SHA256, hash_CRC32, hash_BLAKE3, hash_AutoV3, downloadUrl, is_primary)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
           [f.id, v.id, f.sizeKB, f.name, f.type, f.pickleScanResult, f.pickleScanMessage, f.virusScanResult, f.scannedAt, f.metadata?.format, f.metadata?.size, f.metadata?.fp, f.hashes?.AutoV1, f.hashes?.AutoV2, f.hashes?.SHA256, f.hashes?.CRC32, f.hashes?.BLAKE3, f.hashes?.AutoV3, f.downloadUrl, f.primary ? 1 : 0]
@@ -306,6 +319,8 @@ export class DBService {
     // Versions
     if (m.modelVersions && m.modelVersions.length > 0) {
       for (const v of m.modelVersions) {
+        // 중요: API 응답에 따라 modelId가 누락될 수 있으므로 부모의 ID를 강제 할당
+        if (!v.modelId) v.modelId = m.id;
         await this.upsertCivitaiVersion(v);
       }
     }
@@ -510,19 +525,33 @@ export class DBService {
     for (const f of locals) {
       const vData = f.version_id ? vMap.get(f.version_id) : null;
       const mData = vData ? mMap.get(vData.modelId) : null;
+      const latestV = mData?.modelVersions?.[0] || vData;
 
       result[f.path] = {
         hash: f.hash,
         modified: f.modified,
         versionId: f.version_id,
+        currentVersionId: f.version_id,
+        latestVersionId: latestV?.id,
         isNotFound: !!f.is_not_found,
         imageFetchFailed: !!f.image_fetch_failed,
         preview_path: f.preview_path,
         info_path: f.info_path,
         json_path: f.json_path,
-        localVersionData: vData,
-        latestVersionData: mData?.modelVersions?.[0] || vData,
+        
+        // 화면 표시용 필드 명시적 추가
         modelName: mData?.name || vData?.model?.name,
+        currentVersion: vData?.name,
+        latestVersion: latestV?.name,
+        localReleaseDate: vData?.createdAt,
+        lastReleaseDate: latestV?.createdAt,
+        baseModel: latestV?.baseModel,
+        localBaseModel: vData?.baseModel,
+        hasNewVersion: !!f.has_new_version,
+        isNewBase: !!f.is_new_base,
+        
+        localVersionData: vData,
+        latestVersionData: latestV,
         modelDescription: mData?.description, // mData.description에 이미 평문이 들어있음
         civitaiUrl: mData ? `https://civitai.com/models/${mData.id}` : null,
         lastFetchedAt: mData?.last_fetched_at

@@ -8,6 +8,7 @@ import { FilterProvider } from "./contexts/FilterContext";
 import { ModelProvider } from "./contexts/ModelContext";
 import { ToastProvider } from "./contexts/ToastContext";
 import { LogProvider } from "./contexts/LogContext";
+import { BatchUpdateProvider } from "./contexts/BatchUpdateContext";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
@@ -16,7 +17,9 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
         <SettingsProvider>
           <FilterProvider>
             <ModelProvider>
-              <App />
+              <BatchUpdateProvider>
+                <App />
+              </BatchUpdateProvider>
             </ModelProvider>
           </FilterProvider>
         </SettingsProvider>

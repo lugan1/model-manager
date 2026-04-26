@@ -7,7 +7,7 @@ import { useModelContext } from "../../contexts/ModelContext";
 import { useSettings } from "../../contexts/SettingsContext";
 import { useFilter } from "../../contexts/FilterContext";
 import { useErrorLogs } from "../../hooks/useErrorLogs";
-import { useBatchUpdate } from "../../hooks/useBatchUpdate";
+import { useBatchUpdateContext } from "../../contexts/BatchUpdateContext";
 import { DBService } from "../../services/db.service";
 import { ModelService } from "../../services/model.service";
 
@@ -15,8 +15,7 @@ export const Sidebar = () => {
   const { models, selectedModels, deleteSelected, patchModel, toggleModelSelection, clearSelection } = useModelContext();
   const { paths } = useSettings();
   const { activeTab, selectedDirPath, setSelectedDirPath } = useFilter();
-  const { addLog } = useErrorLogs();
-  const { updateLatestVersionsInParallel } = useBatchUpdate(addLog);
+  const { updateLatestVersionsInParallel } = useBatchUpdateContext();
 
   const currentScanPath = useMemo(() => normalizePath(paths[activeTab].scan), [paths, activeTab]);
   const normalizedSelectedPath = useMemo(() => selectedDirPath ? normalizePath(selectedDirPath) : null, [selectedDirPath]);
@@ -68,8 +67,14 @@ export const Sidebar = () => {
   }, [selectedModelsList, updateLatestVersionsInParallel, clearSelection]);
 
   const handleClearCacheSelected = useCallback(async () => {
+    const metaFilesToDelete: string[] = [];
+    
     for (const m of selectedModelsList) {
       await DBService.deleteLocalFile(m.model_path);
+      
+      if (m.info_path) metaFilesToDelete.push(m.info_path);
+      if (m.json_path) metaFilesToDelete.push(m.json_path);
+      
       patchModel(m.model_path, { 
         latestVersionData: undefined, 
         localVersionData: undefined,
@@ -77,10 +82,16 @@ export const Sidebar = () => {
         currentVersionId: undefined,
         localPreviewUrl: undefined,
         localReleaseDate: undefined,
+        info_path: null,
+        json_path: null,
         hasNewVersion: false, 
         isNotFound: false,
-        currentTask: "IDLE: 캐시 초기화됨"
+        currentTask: "IDLE: 캐시 및 메타데이터 초기화됨"
       });
+    }
+
+    if (metaFilesToDelete.length > 0) {
+      await ModelService.deleteFiles(metaFilesToDelete).catch(console.error);
     }
   }, [selectedModelsList, patchModel]);
 

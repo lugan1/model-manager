@@ -22,7 +22,7 @@ const ModelCard = memo(({ model }: Props) => {
   const { selectedModels, toggleModelSelection } = useModelContext();
   const { downloads, clearDownload } = useDownloads();
   const { startDownload } = useDownloadAction(clearDownload);
-  const { updateModelInfo } = useModelUpdate();
+  const { updateModelInfo } = useModelUpdate(undefined, clearDownload);
   
   const [showMenu, setShowMenu] = useState(false);
   const [contextMenu, setContextMenu] = useState<{x: number, y: number} | null>(null);
@@ -95,9 +95,18 @@ const ModelCard = memo(({ model }: Props) => {
       return;
     }
 
-    // 3. 둘 다 없으면 업데이트 확인 시도
+    // 3. 둘 다 없으면 업데이트 확인 시도 후 열기
     if (model.info_path || model.json_path) {
       await updateModelInfo(model);
+      // 업데이트 확인 후 다시 정보가 생겼는지 체크하여 열기
+      setPersistedTask("정보 확인 중...");
+      // 약간의 지연을 주어 상태가 반영될 시간을 줌
+      setTimeout(() => {
+        const updatedModelId = model.latestVersionData?.modelId || model.localVersionData?.modelId;
+        if (updatedModelId) {
+          apiClient.openExternal(`https://civitai.com/models/${updatedModelId}`).catch(console.error);
+        }
+      }, 500);
     } else {
       // 식별되지 않은 모델임을 알림
       setPersistedTask("식별되지 않은 모델 (업데이트 확인 필요)");
@@ -146,6 +155,7 @@ const ModelCard = memo(({ model }: Props) => {
   const isNotFoundOnCivitai = model.isNotFound || persistedTask?.includes("서버 정보 없음");
 
   const isUnidentified = !model.civitaiUrl && !model.latestVersionData && !model.localVersionData && !model.isNotFound;
+  const hasLink = !!model.civitaiUrl || !!(model.latestVersionData?.modelId || model.localVersionData?.modelId);
 
   const isEarlyAccess = useMemo(() => {
     const data = model.latestVersionData;
