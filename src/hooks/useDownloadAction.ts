@@ -1,16 +1,16 @@
 import { useCallback } from "react";
-import { ModelWithStatus } from "../types";
+import { ModelWithStatus, CivitaiModelVersion } from "../types";
 import { apiClient } from "../services/api.client";
 import { DBService } from "../services/db.service";
 import { ModelService } from "../services/model.service";
-import { getParentPath } from "../utils";
+import { getParentPath, stripHtml } from "../utils";
 import { useSettings } from "../contexts/SettingsContext";
 import { useModelContext } from "../contexts/ModelContext";
 import { useToast } from "./useToast";
 
 export const useDownloadAction = (clearDownload: (id: string) => void) => {
   const { apiKey } = useSettings();
-  const { patchModel, deselectModel } = useModelContext();
+  const { models, patchModel, deselectModel } = useModelContext();
   const { showNotification } = useToast();
 
   const startDownload = useCallback(async (
@@ -18,10 +18,7 @@ export const useDownloadAction = (clearDownload: (id: string) => void) => {
     options: { model?: boolean, preview?: boolean, info?: boolean, isUpdate?: boolean } = { model: true, preview: true, info: true, isUpdate: false }
   ) => {
     const isUpdateMode = options.isUpdate === true;
-    
-    // 업데이트 모드가 아닐 때는 로컬 데이터를 우선 사용 (v1 정보를 받기 위함)
-    // 업데이트 모드일 때는 최신 데이터를 사용 (v2 정보를 받기 위함)
-    const targetMetadata = isUpdateMode ? model.latestVersionData : (model.localVersionData || model.latestVersionData);
+    const targetMetadata = (isUpdateMode ? model.latestVersionData : (model.localVersionData || model.latestVersionData)) as CivitaiModelVersion | null;
 
     if (!targetMetadata) {
       const errorMsg = "모델 식별 정보가 부족합니다. (업데이트 확인을 먼저 실행해주세요)";
@@ -37,6 +34,18 @@ export const useDownloadAction = (clearDownload: (id: string) => void) => {
     const downloadPath = getParentPath(model.model_path);
 
     const modelPath = `${downloadPath}\\${fullFileName}`;
+
+    // 업데이트 모드일 때 타겟 파일이 이미 존재하는지 체크
+    if (isUpdateMode && models.some(m => m.model_path === modelPath && m.model_path !== model.model_path)) {
+      const confirmOverwrite = window.confirm(
+        `동일한 이름의 모델 파일(${fullFileName})이 이미 로컬에 존재합니다.\n\n파일을 새로 다운로드하여 덮어쓰시겠습니까?`
+      );
+      if (!confirmOverwrite) {
+        showNotification("업데이트 취소", "이미 존재하는 파일이 있어 업데이트를 중단했습니다.", "info");
+        return;
+      }
+    }
+
     const previewPath = `${downloadPath}\\${baseName}.preview.png`;
     const infoPath = `${downloadPath}\\${baseName}.civitai.info`;
     const jsonPath = `${downloadPath}\\${baseName}.json`;
@@ -101,13 +110,30 @@ export const useDownloadAction = (clearDownload: (id: string) => void) => {
       }
       
       if (options.info) {
-        const metadataStr = JSON.stringify(targetMetadata, null, 2);
+        const modelDesc = targetMetadata.model?.description || targetMetadata.description || "";
+        const cleanModelDesc = stripHtml(modelDesc);
+        const versionNotes = targetMetadata.description ? stripHtml(targetMetadata.description) : "";
+
+        const enrichedMetadata = {
+          ...targetMetadata,
+          "description": cleanModelDesc,
+          "modelDescription": cleanModelDesc,
+          "model": {
+            ...(targetMetadata.model || {}),
+            "description": cleanModelDesc
+          },
+          "negative prompt": targetMetadata.images?.find((img: any) => img.meta?.negativePrompt)?.meta?.negativePrompt || "",
+          "activation text": (targetMetadata.trainedWords || []).join("\n"),
+          "preferred weight": 1.0,
+          "notes": `URL: https://civitai.com/models/${targetMetadata.modelId}\n\n[MODEL DESCRIPTION]\n${cleanModelDesc}\n\n[VERSION NOTES]\n${versionNotes}`.trim(),
+          "modelId": targetMetadata.modelId,
+          "civitai_model_id": targetMetadata.modelId
+        };
+        const metadataStr = JSON.stringify(enrichedMetadata, null, 2);
         await ModelService.writeTextFile(infoPath, metadataStr);
         await ModelService.writeTextFile(jsonPath, metadataStr);
       }
 
-      const latestName = targetMetadata.name;
-      
       // 상태 업데이트 데이터 구성
       const updatedFields: Partial<ModelWithStatus> = {
         model_path: finalModelPath,
@@ -118,9 +144,8 @@ export const useDownloadAction = (clearDownload: (id: string) => void) => {
         currentTask: isUpdateMode ? "IDLE: 업데이트 완료" : "IDLE: 다운로드 완료"
       };
 
-      // 만약 업데이트 모드였다면, 이제 새 버전이 로컬 버전이 됨
       if (isUpdateMode) {
-        updatedFields.currentVersion = latestName;
+        updatedFields.currentVersion = targetMetadata.name;
         updatedFields.currentVersionId = targetMetadata.id;
         updatedFields.localVersionData = targetMetadata;
         updatedFields.localBaseModel = targetMetadata.baseModel;
@@ -130,15 +155,24 @@ export const useDownloadAction = (clearDownload: (id: string) => void) => {
         updatedFields.isNewBase = false;
       }
 
-      const mergedData = { ...model, ...updatedFields };
-      await DBService.setUpdateEntry(finalModelPath, mergedData);
+      // DB 저장 (관계형 구조에 맞춰 upsert)
+      await DBService.upsertCivitaiVersion(targetMetadata);
+      await DBService.upsertLocalFile({
+        path: finalModelPath,
+        versionId: targetMetadata.id,
+        modified: finalModified,
+        preview_path: finalPreviewPath,
+        info_path: options.info ? infoPath : model.info_path,
+        json_path: options.info ? jsonPath : model.json_path,
+        isNotFound: false
+      });
+
       patchModel(model.model_path, updatedFields);
 
       if (isUpdateMode) {
         const oldBase = model.model_path.replace(/\.(safetensors|ckpt)$/i, "");
         const targetsToDelete: string[] = [];
 
-        // 1. 모델 경로가 변경된 경우 기존 모델 및 관련 메타데이터 파일 삭제
         if (finalModelPath !== model.model_path) {
           targetsToDelete.push(model.model_path);
           if (model.info_path) targetsToDelete.push(model.info_path);
@@ -147,16 +181,13 @@ export const useDownloadAction = (clearDownload: (id: string) => void) => {
           targetsToDelete.push(`${oldBase}.civitai.notfound`);
           targetsToDelete.push(`${oldBase}.yaml`);
           
-          await DBService.deleteEntry(model.model_path);
-          await DBService.deleteHash(model.model_path);
+          await DBService.deleteLocalFile(model.model_path);
         }
 
-        // 2. 프리뷰 이미지 경로가 변경된 경우 (모델 경로 변경 여부와 독립적)
         if (model.preview_path && finalPreviewPath !== model.preview_path) {
           targetsToDelete.push(model.preview_path);
         }
 
-        // 중복 제거 및 새로 받은 파일 보호
         const uniqueTargets = [...new Set(targetsToDelete)].filter(
           (p): p is string => !!p && p !== finalModelPath && p !== finalPreviewPath
         );
@@ -164,8 +195,6 @@ export const useDownloadAction = (clearDownload: (id: string) => void) => {
         if (uniqueTargets.length > 0) {
           await ModelService.deleteFiles(uniqueTargets);
         }
-        
-        // 중요: 업데이트 작업이 완료되었으므로 선택 목록에서 제거
         deselectModel(model.model_path);
       }
 
@@ -178,10 +207,6 @@ export const useDownloadAction = (clearDownload: (id: string) => void) => {
     } catch (e: any) {
       clearDownload(downloadId);
       let subMsg = e.toString();
-      if (subMsg.includes("401")) subMsg = "API 키가 올바르지 않거나 권한(얼리 억세스 구매 등)이 없습니다.";
-      else if (subMsg.includes("404")) subMsg = "파일을 찾을 수 없습니다. (삭제되었을 수 있음)";
-      else if (subMsg.includes("timeout")) subMsg = "네트워크 연결 시간이 초과되었습니다.";
-      
       showNotification("작업 중 오류 발생", subMsg, "error");
       throw e;
     }

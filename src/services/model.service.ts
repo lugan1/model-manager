@@ -16,13 +16,13 @@ export class ModelService {
    * 모델의 해시값을 계산합니다. (로컬 DB 캐시 활용)
    */
   static async getModelHash(path: string, modified: number): Promise<string> {
-    const cached = await DBService.getHashEntry(path);
-    if (cached && cached.modified === modified) {
+    const cached = await DBService.getLocalFile(path);
+    if (cached && cached.modified === modified && cached.hash) {
       return cached.hash;
     }
 
     const hash = await apiClient.invoke<string>("calculate_model_hash", { path });
-    await DBService.setHashEntry(path, { hash, modified });
+    await DBService.upsertLocalFile({ path, hash, modified });
     return hash;
   }
 
@@ -47,6 +47,13 @@ export class ModelService {
     } catch (error: any) {
       return { hash, error, status: "error" as const };
     }
+  }
+
+  /**
+   * 파일 다운로드
+   */
+  static async downloadFile(id: string, url: string, path: string, overwrite: boolean = false): Promise<{ path: string, modified: number }> {
+    return await apiClient.invoke("download_file", { id, url, path, overwrite });
   }
 
   /**

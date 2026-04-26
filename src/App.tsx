@@ -9,12 +9,14 @@ function App() {
   const { activeTab } = useFilter();
   const { paths } = useSettings();
 
+  const scanPath = paths[activeTab].scan;
+
   // 초기 스캔 및 탭 변경 시 스캔
   useEffect(() => {
-    if (paths[activeTab].scan) {
+    if (scanPath) {
       scanFolder().then(r => r);
     }
-  }, [activeTab, paths, scanFolder]);
+  }, [activeTab, scanPath, scanFolder]);
 
   return <MainLayout />;
 }

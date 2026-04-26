@@ -69,8 +69,7 @@ export const Sidebar = () => {
 
   const handleClearCacheSelected = useCallback(async () => {
     for (const m of selectedModelsList) {
-      await DBService.deleteEntry(m.model_path);
-      await DBService.deleteHash(m.model_path);
+      await DBService.deleteLocalFile(m.model_path);
       patchModel(m.model_path, { 
         latestVersionData: undefined, 
         localVersionData: undefined,

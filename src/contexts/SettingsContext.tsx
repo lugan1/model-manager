@@ -46,8 +46,12 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     localStorage.setItem("lycoris_scan_path", newPaths.lycoris.scan);
   };
 
+  const contextValue = React.useMemo(() => ({
+    paths, setPaths, apiKey, setApiKey, updateTTL, setUpdateTTL, savePaths
+  }), [paths, apiKey, updateTTL]);
+
   return (
-    <SettingsContext.Provider value={{ paths, setPaths, apiKey, setApiKey, updateTTL, setUpdateTTL, savePaths }}>
+    <SettingsContext.Provider value={contextValue}>
       {children}
     </SettingsContext.Provider>
   );

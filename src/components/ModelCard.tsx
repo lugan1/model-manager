@@ -12,6 +12,7 @@ import { useDownloadAction } from "../hooks/useDownloadAction";
 import { useModelUpdate } from "../hooks/useModelUpdate";
 import { useDownloads } from "../hooks/useDownloads";
 import { formatSize } from "../utils";
+import { ModelDetailsPopover } from "./ui/ModelDetailsPopover";
 
 interface Props {
   model: ModelWithStatus;
@@ -24,9 +25,16 @@ const ModelCard = memo(({ model }: Props) => {
   const { updateModelInfo } = useModelUpdate();
   
   const [showMenu, setShowMenu] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{x: number, y: number} | null>(null);
   const [persistedTask, setPersistedTask] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ x: e.clientX, y: e.clientY });
+  };
 
   const isSelected = selectedModels.has(model.model_path);
   const downloadProgress = downloads[model.model_path];
@@ -163,10 +171,19 @@ const ModelCard = memo(({ model }: Props) => {
   return (
     <div 
       onClick={() => toggleModelSelection(model.model_path)}
+      onContextMenu={handleContextMenu}
       className={`group relative bg-[#1f2937] border-4 rounded-[32px] overflow-hidden cursor-pointer transition-all duration-300 shadow-2xl ${
         isSelected ? "border-[#ff9a00] ring-8 ring-[#ff9a00]/20 scale-[0.98]" : "border-[#374151] hover:border-[#4b5563] hover:-translate-y-2"
       }`}
     >
+      {contextMenu && (
+        <ModelDetailsPopover 
+          model={model} 
+          x={contextMenu.x} 
+          y={contextMenu.y} 
+          onClose={() => setContextMenu(null)} 
+        />
+      )}
       <div className="absolute top-0 right-0 z-30 flex items-start gap-2 p-3">
         <div 
           onClick={(e) => { e.stopPropagation(); toggleModelSelection(model.model_path); }}
