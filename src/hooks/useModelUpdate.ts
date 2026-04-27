@@ -5,7 +5,7 @@ import { DBService } from "../services/db.service";
 import { CivitaiService } from "../services/civitai.service";
 import { useModelContext } from "../contexts/ModelContext";
 import { useSettings } from "../contexts/SettingsContext";
-import { normalizePath, calculateIsOutdated, stripHtml, normalizeError } from "../utils";
+import { normalizePath, calculateIsOutdated, stripHtml, normalizeError, escapeUnicode } from "../utils";
 
 export const useModelUpdate = (addLog?: any, clearDownload?: (id: string) => void) => {
   const { patchModel } = useModelContext();
@@ -107,6 +107,12 @@ export const useModelUpdate = (addLog?: any, clearDownload?: (id: string) => voi
                 isNotFound: true 
               });
               patchModel(model.model_path, { isNotFound: true, hash: currentHash });
+              addLog?.({
+                method: "IDENTIFY",
+                target: model.name,
+                message: "Civitai 서버에 모델 정보가 없습니다 (404).",
+                status: 404
+              });
               return updateTask("IDLE: 서버 정보 없음 (404)");
             }
 
@@ -145,16 +151,24 @@ export const useModelUpdate = (addLog?: any, clearDownload?: (id: string) => voi
           const versionNotes = data.description ? stripHtml(data.description) : "";
 
           // 메타데이터 파일 갱신
-          const notesContent = `URL: https://civitai.com/models/${data.modelId}${cleanModelDesc ? `\n\n[MODEL DESCRIPTION]\n${cleanModelDesc}` : ""}${versionNotes ? `\n\n[VERSION NOTES]\n${versionNotes}` : ""}`;
+          const civitaiUrl = `https://civitai.com/models/${data.modelId}?modelVersionId=${data.id}`;
+          const notesContent = `URL: ${civitaiUrl}\n\n[MODEL DESCRIPTION]\n${cleanModelDesc}\n\n[VERSION NOTES]\n${versionNotes}`;
           const enrichedData = {
             ...data,
             "description": cleanModelDesc || versionNotes,
             "modelDescription": cleanModelDesc,
             "notes": notesContent.trim(),
             "modelId": data.modelId,
-            "civitai_model_id": data.modelId
+            "civitai_model_id": data.modelId,
+            "url": civitaiUrl,
+            "civitaiUrl": civitaiUrl,
+            "source": civitaiUrl,
+            "activation text": (data.trainedWords || []).join("\n"),
+            "preferred weight": 1.0,
+            "sd version": data.baseModel
           };
-          const metaStr = JSON.stringify(enrichedData, null, 2);
+          // ReForge/Python 환경(cp949 인코딩)과의 호환성을 위해 비-ASCII 문자를 유니코드 시퀀스로 변환하여 저장
+          const metaStr = escapeUnicode(JSON.stringify(enrichedData, null, 2));
           
           if (model.info_path) await ModelService.writeTextFile(model.info_path, metaStr).catch(() => {});
           else await ModelService.writeTextFile(`${baseName}.civitai.info`, metaStr).catch(() => {});

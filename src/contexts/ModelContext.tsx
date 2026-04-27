@@ -79,20 +79,23 @@ export const ModelProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
       return modelList.map(m => {
         const entry = cache[m.model_path];
-        // 수정 시간 비교 시 2초 이내의 오차는 동일한 파일로 간주 (시스템마다 미세하게 다를 수 있음)
+        // 수정 시간 비교 시 2초 이내의 오차는 동일한 파일로 간주
         const isTimeMatch = entry && Math.abs(entry.modified - m.modified) <= 2;
 
-        if (entry && isTimeMatch) {
-          // 중요: 실제 스캔 결과(m.preview_path)가 없는데 DB에만 경로가 있다면 유령 경로로 간주
+        if (entry) {
           const actualPreviewPath = m.preview_path || null;
           
           return {
             ...m,
             ...entry,
-            preview_path: actualPreviewPath, // 실제 파일 시스템 상태를 우선함
-            currentTask: entry.isNotFound ? "IDLE: 서버 정보 없음 (캐시됨)" : 
-                        (entry.imageFetchFailed && !actualPreviewPath) ? "IDLE: 이미지 없음 (캐시됨)" :
-                        (entry.lastFetchedAt ? `IDLE: 캐시됨 (${new Date(entry.lastFetchedAt).toLocaleDateString()} 확인)` : m.currentTask)
+            // 중요: 파일 시간이 바뀌더라도 (업데이트 등) 정렬 기준이 되는 stableModified는 DB 값을 최우선함
+            stableModified: entry.stableModified || m.modified,
+            preview_path: actualPreviewPath,
+            currentTask: (isTimeMatch) ? (
+              entry.isNotFound ? "IDLE: 서버 정보 없음 (캐시됨)" : 
+              (entry.imageFetchFailed && !actualPreviewPath) ? "IDLE: 이미지 없음 (캐시됨)" :
+              (entry.lastFetchedAt ? `IDLE: 캐시됨 (${new Date(entry.lastFetchedAt).toLocaleDateString()} 확인)` : m.currentTask)
+            ) : "IDLE: 대기 중"
           };
         }
         return m;

@@ -40,6 +40,7 @@ export class DBService {
             hash TEXT,
             version_id INTEGER,
             modified INTEGER,
+            stable_modified INTEGER,
             preview_path TEXT,
             info_path TEXT,
             json_path TEXT,
@@ -53,6 +54,7 @@ export class DBService {
         // 마이그레이션: 기존 테이블에 컬럼이 없는 경우 추가
         try { await db.execute("ALTER TABLE local_files ADD COLUMN has_new_version BOOLEAN DEFAULT 0"); } catch(e) {}
         try { await db.execute("ALTER TABLE local_files ADD COLUMN is_new_base BOOLEAN DEFAULT 0"); } catch(e) {}
+        try { await db.execute("ALTER TABLE local_files ADD COLUMN stable_modified INTEGER"); } catch(e) {}
 
         // 2. Civitai 모델 정보
         await db.execute(`
@@ -173,6 +175,7 @@ export class DBService {
     hash?: string | null;
     versionId?: number | null;
     modified: number;
+    stable_modified?: number | null;
     preview_path?: string | null;
     info_path?: string | null;
     json_path?: string | null;
@@ -182,16 +185,25 @@ export class DBService {
     isNewBase?: boolean;
   }) {
     const db = await this.getDB();
-    console.log(`[DBService] Upserting local file: ${params.path}`, params);
+    
+    // 만약 stable_modified가 제공되지 않았다면, 기존 값이 있는지 확인하여 유지하거나 현재 modified를 사용
+    let stableModified = params.stable_modified;
+    if (stableModified === undefined || stableModified === null) {
+      const existing = await this.getLocalFile(params.path);
+      stableModified = existing?.stable_modified || params.modified;
+    }
+
+    console.log(`[DBService] Upserting local file: ${params.path}`, { ...params, stable_modified: stableModified });
     await db.execute(
       `INSERT OR REPLACE INTO local_files 
-       (path, hash, version_id, modified, preview_path, info_path, json_path, is_not_found, image_fetch_failed, has_new_version, is_new_base) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+       (path, hash, version_id, modified, stable_modified, preview_path, info_path, json_path, is_not_found, image_fetch_failed, has_new_version, is_new_base) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [
         params.path, 
         params.hash || null, 
         params.versionId || null, 
         params.modified, 
+        stableModified,
         params.preview_path || null, 
         params.info_path || null, 
         params.json_path || null, 
@@ -530,6 +542,7 @@ export class DBService {
       result[f.path] = {
         hash: f.hash,
         modified: f.modified,
+        stableModified: f.stable_modified, // DB의 stable_modified를 반환 객체에 매핑
         versionId: f.version_id,
         currentVersionId: f.version_id,
         latestVersionId: latestV?.id,

@@ -63,6 +63,11 @@ export const BatchUpdateProvider: React.FC<{ children: React.ReactNode }> = ({ c
   }, []);
 
   const updateLatestVersionsInParallel = useCallback(async (modelList: ModelWithStatus[], forceRefresh = false) => {
+    if (isUpdating) {
+      console.warn("[BatchUpdate] Update already in progress. Ignoring request.");
+      return;
+    }
+
     const total = modelList.length;
     if (total === 0) return;
     
@@ -72,14 +77,17 @@ export const BatchUpdateProvider: React.FC<{ children: React.ReactNode }> = ({ c
     cancelRef.current = false;
 
     const mode = forceRefresh ? "FORCE" : "STANDARD";
-    const cpuCores = navigator.hardwareConcurrency || 4;
-    const dynamicChunkSize = Math.min(Math.max(cpuCores * 5, 10), 100);
     
-    setUpdateStatus({ current: 0, total, fetched: 0, skipped: 0, mode, name: "BATCH_START", task: `[${mode}] 처리 시작...`, results: [] });
+    setUpdateStatus({ 
+      current: 0, total, fetched: 0, skipped: 0, mode, 
+      name: "BATCH_START", task: `[${mode}] 처리 시작...`, results: [] 
+    });
     
     let lastUiUpdateTime = 0;
     const UI_UPDATE_INTERVAL = 100;
-    const CONCURRENCY = 3; // 동시 작업 수 (3~5개 권장)
+    // 고사양 PC 사양을 활용하기 위해 CPU 코어 수에 비례하여 동적으로 할당 (최대 32개)
+    const cpuCores = typeof navigator !== 'undefined' ? (navigator.hardwareConcurrency || 8) : 8;
+    const CONCURRENCY = Math.min(cpuCores * 2, 32); 
 
     // 작업 큐 (인덱스 추적)
     let nextIndex = 0;
@@ -104,11 +112,16 @@ export const BatchUpdateProvider: React.FC<{ children: React.ReactNode }> = ({ c
         try {
           // 기존 정보가 있고 강제 새로고침이 아니며, 대량 처리 중인 경우만 스킵
           if (!forceRefresh && !isSmallSelection && (m.info_path || m.json_path)) {
-            setUpdateStatus(prev => ({ 
-              ...prev, 
-              current: ++completedCount,
-              skipped: prev.skipped + 1 
-            }));
+            completedCount++;
+            setUpdateStatus(prev => {
+              // 현재 실행 중인 작업의 결과가 아니면(total이 다르면) 업데이트 무시하여 꼬임 방지
+              if (prev.total !== total) return prev;
+              return {
+                ...prev,
+                current: completedCount,
+                skipped: prev.skipped + 1
+              };
+            });
             continue;
           }
 
@@ -116,15 +129,22 @@ export const BatchUpdateProvider: React.FC<{ children: React.ReactNode }> = ({ c
             const now = Date.now();
             if (now - lastUiUpdateTime > UI_UPDATE_INTERVAL) {
               lastUiUpdateTime = now;
-              setUpdateStatus(prev => ({ ...prev, name: m.name, task }));
+              setUpdateStatus(prev => {
+                if (prev.total !== total) return prev;
+                return { ...prev, name: m.name, task };
+              });
             }
           });
-          
-          setUpdateStatus(prev => ({ 
-            ...prev, 
-            current: ++completedCount,
-            fetched: prev.fetched + 1 
-          }));
+
+          completedCount++;
+          setUpdateStatus(prev => {
+            if (prev.total !== total) return prev;
+            return {
+              ...prev,
+              current: completedCount,
+              fetched: prev.fetched + 1
+            };
+          });
         } catch (err: any) {
           addLog?.({
             method: mode,
@@ -132,11 +152,15 @@ export const BatchUpdateProvider: React.FC<{ children: React.ReactNode }> = ({ c
             message: normalizeError(err),
             status: err.status
           });
-          setUpdateStatus(prev => ({ 
-            ...prev, 
-            current: ++completedCount,
-            skipped: prev.skipped + 1 
-          }));
+          completedCount++;
+          setUpdateStatus(prev => {
+            if (prev.total !== total) return prev;
+            return {
+              ...prev,
+              current: completedCount,
+              skipped: prev.skipped + 1
+            };
+          });
         }
       }
     };
@@ -151,7 +175,7 @@ export const BatchUpdateProvider: React.FC<{ children: React.ReactNode }> = ({ c
     if (!wasCancelled) {
       setShowUpdateReport(true);
     }
-  }, [updateModelInfo, addLog]);
+  }, [updateModelInfo, addLog, isUpdating]);
 
   return (
     <BatchUpdateContext.Provider value={{

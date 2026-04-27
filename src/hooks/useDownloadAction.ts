@@ -3,15 +3,17 @@ import { ModelWithStatus, CivitaiModelVersion } from "../types";
 import { apiClient } from "../services/api.client";
 import { DBService } from "../services/db.service";
 import { ModelService } from "../services/model.service";
-import { getParentPath, stripHtml } from "../utils";
+import { getParentPath, stripHtml, normalizeError, escapeUnicode } from "../utils";
 import { useSettings } from "../contexts/SettingsContext";
 import { useModelContext } from "../contexts/ModelContext";
 import { useToast } from "./useToast";
+import { useErrorLogs } from "./useErrorLogs";
 
 export const useDownloadAction = (clearDownload: (id: string) => void) => {
   const { apiKey } = useSettings();
   const { models, patchModel, deselectModel } = useModelContext();
   const { showNotification } = useToast();
+  const { addLog } = useErrorLogs();
 
   const startDownload = useCallback(async (
     model: ModelWithStatus, 
@@ -112,11 +114,12 @@ export const useDownloadAction = (clearDownload: (id: string) => void) => {
       if (options.info) {
         const modelDesc = targetMetadata.model?.description || targetMetadata.description || "";
         const cleanModelDesc = stripHtml(modelDesc);
+        const civitaiUrl = `https://civitai.com/models/${targetMetadata.modelId}?modelVersionId=${targetMetadata.id}`;
         const versionNotes = targetMetadata.description ? stripHtml(targetMetadata.description) : "";
 
         const enrichedMetadata = {
           ...targetMetadata,
-          "description": cleanModelDesc,
+          "description": cleanModelDesc || versionNotes,
           "modelDescription": cleanModelDesc,
           "model": {
             ...(targetMetadata.model || {}),
@@ -125,11 +128,16 @@ export const useDownloadAction = (clearDownload: (id: string) => void) => {
           "negative prompt": targetMetadata.images?.find((img: any) => img.meta?.negativePrompt)?.meta?.negativePrompt || "",
           "activation text": (targetMetadata.trainedWords || []).join("\n"),
           "preferred weight": 1.0,
-          "notes": `URL: https://civitai.com/models/${targetMetadata.modelId}\n\n[MODEL DESCRIPTION]\n${cleanModelDesc}\n\n[VERSION NOTES]\n${versionNotes}`.trim(),
+          "sd version": targetMetadata.baseModel,
+          "notes": `URL: ${civitaiUrl}\n\n[MODEL DESCRIPTION]\n${cleanModelDesc}\n\n[VERSION NOTES]\n${versionNotes}`.trim(),
           "modelId": targetMetadata.modelId,
-          "civitai_model_id": targetMetadata.modelId
+          "civitai_model_id": targetMetadata.modelId,
+          "url": civitaiUrl,
+          "source": civitaiUrl,
+          "civitaiUrl": civitaiUrl
         };
-        const metadataStr = JSON.stringify(enrichedMetadata, null, 2);
+        // ReForge/Python 환경(cp949 인코딩)과의 호환성을 위해 비-ASCII 문자를 유니코드 시퀀스로 변환하여 저장
+        const metadataStr = escapeUnicode(JSON.stringify(enrichedMetadata, null, 2));
         await ModelService.writeTextFile(infoPath, metadataStr);
         await ModelService.writeTextFile(jsonPath, metadataStr);
       }
@@ -155,19 +163,24 @@ export const useDownloadAction = (clearDownload: (id: string) => void) => {
         updatedFields.isNewBase = false;
       }
 
+      // 기존 모델의 stableModified 값을 가져와서 새 파일에 승계 (정렬 위치 유지용)
+      const existingRecord = await DBService.getLocalFile(model.model_path);
+      const originalStableModified = existingRecord?.stable_modified || model.stableModified || model.modified;
+
       // DB 저장 (관계형 구조에 맞춰 upsert)
       await DBService.upsertCivitaiVersion(targetMetadata);
       await DBService.upsertLocalFile({
         path: finalModelPath,
         versionId: targetMetadata.id,
         modified: finalModified,
+        stable_modified: originalStableModified, // 위치 고정을 위해 원래 시간 승계
         preview_path: finalPreviewPath,
         info_path: options.info ? infoPath : model.info_path,
         json_path: options.info ? jsonPath : model.json_path,
         isNotFound: false
       });
 
-      patchModel(model.model_path, updatedFields);
+      patchModel(model.model_path, { ...updatedFields, stableModified: originalStableModified });
 
       if (isUpdateMode) {
         const oldBase = model.model_path.replace(/\.(safetensors|ckpt)$/i, "");
@@ -206,8 +219,14 @@ export const useDownloadAction = (clearDownload: (id: string) => void) => {
 
     } catch (e: any) {
       clearDownload(downloadId);
-      let subMsg = e.toString();
-      showNotification("작업 중 오류 발생", subMsg, "error");
+      const errorMsg = normalizeError(e);
+      addLog?.({
+        method: isUpdateMode ? "UPDATE" : "DOWNLOAD",
+        target: model.name,
+        message: errorMsg,
+        status: e.status
+      });
+      showNotification("작업 중 오류 발생", errorMsg, "error");
       throw e;
     }
   }, [apiKey, showNotification, patchModel, deselectModel, clearDownload]);

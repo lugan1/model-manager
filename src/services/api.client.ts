@@ -91,6 +91,22 @@ export const apiClient = {
 
   // --- Utility ---
   async openExternal(url: string): Promise<void> {
-    return await openUrl(url);
+    try {
+      // 1. Tauri 환경인지 확인 시도
+      const isTauri = typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__;
+      
+      if (isTauri) {
+        await openUrl(url);
+      } else {
+        // 2. 브라우저/웹 환경 (Reforge 등)
+        window.open(url, '_blank', 'noopener,noreferrer');
+      }
+    } catch (error) {
+      console.error("[APIClient] Failed to open external URL:", error);
+      // Fallback
+      if (typeof window !== 'undefined') {
+        window.open(url, '_blank', 'noopener,noreferrer');
+      }
+    }
   },
 };

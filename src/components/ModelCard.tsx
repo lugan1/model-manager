@@ -11,7 +11,8 @@ import { useSettings } from "../contexts/SettingsContext";
 import { useDownloadAction } from "../hooks/useDownloadAction";
 import { useModelUpdate } from "../hooks/useModelUpdate";
 import { useDownloads } from "../hooks/useDownloads";
-import { formatSize } from "../utils";
+import { useErrorLogs } from "../hooks/useErrorLogs";
+import { formatSize, isTauri } from "../utils";
 import { ModelDetailsPopover } from "./ui/ModelDetailsPopover";
 
 interface Props {
@@ -21,8 +22,9 @@ interface Props {
 const ModelCard = memo(({ model }: Props) => {
   const { selectedModels, toggleModelSelection } = useModelContext();
   const { downloads, clearDownload } = useDownloads();
+  const { addLog } = useErrorLogs();
   const { startDownload } = useDownloadAction(clearDownload);
-  const { updateModelInfo } = useModelUpdate(undefined, clearDownload);
+  const { updateModelInfo } = useModelUpdate(addLog, clearDownload);
   
   const [showMenu, setShowMenu] = useState(false);
   const [contextMenu, setContextMenu] = useState<{x: number, y: number} | null>(null);
@@ -116,7 +118,18 @@ const ModelCard = memo(({ model }: Props) => {
 
   const handleOpenFolder = (e: React.MouseEvent) => {
     e.stopPropagation();
-    ModelService.openFolder(model.model_path).catch(console.error);
+    if (isTauri()) {
+      ModelService.openFolder(model.model_path).catch(console.error);
+    } else {
+      // 웹 환경 (Reforge 등)에서는 폴더 열기가 불가능하므로 경로 복사로 대체
+      navigator.clipboard.writeText(model.model_path).then(() => {
+        setPersistedTask("경로 복사 완료");
+        setTimeout(() => setPersistedTask(null), 2000);
+      }).catch(() => {
+        setPersistedTask("복사 실패");
+        setTimeout(() => setPersistedTask(null), 2000);
+      });
+    }
   };
 
   const toggleMenu = (e: React.MouseEvent) => {
@@ -161,17 +174,18 @@ const ModelCard = memo(({ model }: Props) => {
     const data = model.latestVersionData;
     if (!data) return false;
 
-    // 1. 표준 날짜 체크
-    if (data.earlyAccessEndsAt) {
-      if (new Date(data.earlyAccessEndsAt).getTime() > Date.now()) return true;
-    }
+    // 1. 가용성 필드가 명시적으로 Public이면 아님
+    if (data.availability === "Public") return false;
 
-    // 2. 가용성 필드 체크
+    // 2. 가용성 필드가 EarlyAccess면 맞음
     if (data.availability === "EarlyAccess") return true;
 
-    // 3. 얼리 억세스 설정 객체 존재 여부 체크
-    if (data.earlyAccessConfig && Object.keys(data.earlyAccessConfig).length > 0) return true;
+    // 3. 종료 날짜가 설정되어 있다면 현재 시간과 비교
+    if (data.earlyAccessEndsAt) {
+      return new Date(data.earlyAccessEndsAt).getTime() > Date.now();
+    }
 
+    // 4. 그 외의 경우 (earlyAccessConfig가 있어도 위 조건에 걸리지 않으면) 아님으로 판단
     return false;
   }, [model.latestVersionData]);
 
@@ -365,7 +379,7 @@ const ModelCard = memo(({ model }: Props) => {
                 <ExternalLink className="size-6" />
               </button>
             </Tooltip>
-            <Tooltip content="파일 위치 열기" className="flex-[0.7]">
+            <Tooltip content={isTauri() ? "파일 위치 열기" : "파일 경로 복사"} className="flex-[0.7]">
               <button onClick={handleOpenFolder} className="w-full bg-[#374151] hover:bg-[#4b5563] text-white py-4 rounded-xl transition-all flex items-center justify-center">
                 <FolderOpen className="size-6" />
               </button>

@@ -59,9 +59,50 @@ pub async fn scan_models(path: String) -> Result<Vec<ModelInfo>, String> {
 
 #[command]
 pub async fn calculate_model_hash(path: String) -> Result<String, String> {
-    use std::io::Read;
+    use std::io::{Read, Seek, SeekFrom};
+    use serde_json::Value;
     
     let mut file = fs::File::open(&path).map_err(|e| e.to_string())?;
+
+    // --- Fast Path: Safetensors Metadata Header ---
+    // Safetensors 파일은 맨 앞에 8바이트로 헤더 크기가 기록되어 있습니다.
+    let mut header_size_buf = [0u8; 8];
+    if file.read_exact(&mut header_size_buf).is_ok() {
+        let header_size = u64::from_le_bytes(header_size_buf);
+        
+        // 헤더 사이즈가 합리적인 범위 내인지 확인 (예: 100MB 이하)
+        if header_size > 0 && header_size < 100 * 1024 * 1024 {
+            let mut header_buf = vec![0u8; header_size as usize];
+            if file.read_exact(&mut header_buf).is_ok() {
+                if let Ok(header_json) = serde_json::from_slice::<Value>(&header_buf) {
+                    // __metadata__ 필드 탐색
+                    if let Some(metadata) = header_json.get("__metadata__") {
+                        // Civitai 등에서 삽입하는 표준 해시 필드 확인
+                        let hash_keys = [
+                            "modelspec.hash_sha256",
+                            "ssmd_version",
+                            "ss_hash",
+                            "civitai_hash"
+                        ];
+                        
+                        for key in hash_keys {
+                            if let Some(h) = metadata.get(key).and_then(|v| v.as_str()) {
+                                if h.len() >= 8 {
+                                    println!("[Scanner] Fast-hash hit ({}): {}", key, h);
+                                    return Ok(h.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Slow Path: Full File BLAKE3 Hashing ---
+    // 헤더에 정보가 없거나 다른 포맷인 경우 전체 파일을 읽습니다.
+    // 한 번 계산되면 DB에 캐싱되므로 이후에는 이 블록에 진입하지 않습니다.
+    file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
     let mut hasher = blake3::Hasher::new();
     let mut buffer = [0; 1024 * 1024]; // 1MB buffer for fast I/O
     
@@ -71,5 +112,6 @@ pub async fn calculate_model_hash(path: String) -> Result<String, String> {
         hasher.update(&buffer[..count]);
     }
     
-    Ok(hasher.finalize().to_hex().to_string())
+    let full_hash = hasher.finalize().to_hex().to_string();
+    Ok(full_hash)
 }

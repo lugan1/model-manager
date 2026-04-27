@@ -4,7 +4,7 @@ import { apiClient, Semaphore } from "./api.client";
  * Civitai API 전용 서비스
  */
 export class CivitaiService {
-  private static apiSemaphore = new Semaphore(5); // Civitai API 요청 제한
+  private static apiSemaphore = new Semaphore(15); // Civitai API 요청 제한 (안정성과 속도 균형)
 
   private static BASE_URL = "https://civitai.red/api/v1";
 
