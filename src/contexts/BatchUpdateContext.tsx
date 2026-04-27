@@ -31,7 +31,7 @@ interface BatchUpdateContextType {
 const BatchUpdateContext = createContext<BatchUpdateContextType | undefined>(undefined);
 
 export const BatchUpdateProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { addLog } = useErrorLogs();
+  const { addLog, deleteLogByPath } = useErrorLogs();
   const { clearDownload } = useDownloads();
   const { updateModelInfo } = useModelUpdate(addLog, clearDownload);
   
@@ -85,9 +85,9 @@ export const BatchUpdateProvider: React.FC<{ children: React.ReactNode }> = ({ c
     
     let lastUiUpdateTime = 0;
     const UI_UPDATE_INTERVAL = 100;
-    // 고사양 PC 사양을 활용하기 위해 CPU 코어 수에 비례하여 동적으로 할당 (최대 32개)
+    // 고사양 PC 사양을 활용하기 위해 CPU 코어 수에 비례하여 동적으로 할당 (최대 10개)
     const cpuCores = typeof navigator !== 'undefined' ? (navigator.hardwareConcurrency || 8) : 8;
-    const CONCURRENCY = Math.min(cpuCores * 2, 32); 
+    const CONCURRENCY = Math.min(cpuCores, 10); 
 
     // 작업 큐 (인덱스 추적)
     let nextIndex = 0;
@@ -145,6 +145,9 @@ export const BatchUpdateProvider: React.FC<{ children: React.ReactNode }> = ({ c
               fetched: prev.fetched + 1
             };
           });
+
+          // 성공 후 즉시 로그 삭제 (진행 바 업데이트와 시각적 동기화)
+          deleteLogByPath(m.model_path);
         } catch (err: any) {
           addLog?.({
             method: mode,

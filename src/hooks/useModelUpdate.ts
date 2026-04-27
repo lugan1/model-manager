@@ -5,11 +5,13 @@ import { DBService } from "../services/db.service";
 import { CivitaiService } from "../services/civitai.service";
 import { useModelContext } from "../contexts/ModelContext";
 import { useSettings } from "../contexts/SettingsContext";
+import { useErrorLogs } from "./useErrorLogs";
 import { normalizePath, calculateIsOutdated, stripHtml, normalizeError, escapeUnicode } from "../utils";
 
 export const useModelUpdate = (addLog?: any, clearDownload?: (id: string) => void) => {
   const { patchModel } = useModelContext();
   const { updateTTL } = useSettings();
+  const { deleteLogByPath } = useErrorLogs();
 
   const updateModelInfo = useCallback(async (
     model: ModelWithStatus, 
@@ -110,6 +112,7 @@ export const useModelUpdate = (addLog?: any, clearDownload?: (id: string) => voi
               addLog?.({
                 method: "IDENTIFY",
                 target: model.name,
+                path: model.model_path,
                 message: "Civitai 서버에 모델 정보가 없습니다 (404).",
                 status: 404
               });
@@ -119,6 +122,7 @@ export const useModelUpdate = (addLog?: any, clearDownload?: (id: string) => voi
             addLog?.({
               method: "IDENTIFY",
               target: model.name,
+              path: model.model_path,
               message: `식별 실패: ${normalizeError(err)}`,
               status: err.status
             });
@@ -250,6 +254,7 @@ export const useModelUpdate = (addLog?: any, clearDownload?: (id: string) => voi
               addLog?.({
                 method: "DOWNLOAD",
                 target: `${model.name} (Preview)`,
+                path: model.model_path,
                 message: `현재 버전 이미지 다운로드 실패: ${normalizeError(err)}`,
                 status: err.status
               });
@@ -322,6 +327,7 @@ export const useModelUpdate = (addLog?: any, clearDownload?: (id: string) => voi
           addLog?.({
             method: "UPDATE_CHECK",
             target: model.name,
+            path: model.model_path,
             message: `최신 정보 조회 실패: ${normalizeError(err)}`,
             status: err.status
           });
@@ -334,6 +340,7 @@ export const useModelUpdate = (addLog?: any, clearDownload?: (id: string) => voi
       addLog?.({
         method: "UPDATE",
         target: model.name,
+        path: model.model_path,
         message: errorMsg,
         status: e.status
       });

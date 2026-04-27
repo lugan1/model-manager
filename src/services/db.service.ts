@@ -7,6 +7,15 @@ const DB_PATH = "sqlite:D:/ImageGenerator/model-manager/model-manager.db";
 
 export class DBService {
   private static dbPromise: Promise<Database> | null = null;
+  private static queryQueue: Promise<any> = Promise.resolve();
+
+  private static async runExclusive<T>(fn: (db: Database) => Promise<T>): Promise<T> {
+    const db = await this.getDB();
+    // 쿼리 실행을 순차적으로 정렬하여 'database is locked' 에러 방지
+    const result = this.queryQueue.then(() => fn(db));
+    this.queryQueue = result.catch(() => {}); // 다음 쿼리를 위해 에러와 무관하게 큐 유지
+    return result;
+  }
 
   private static async getDB() {
     if (this.dbPromise) return this.dbPromise;
@@ -14,143 +23,6 @@ export class DBService {
     this.dbPromise = (async () => {
       try {
         const db = await Database.load(DB_PATH);
-
-        // 마이그레이션: 기존 구조(updates 테이블)나 하이브리드 구조(civitai_images 테이블 없음) 감지 시 초기화
-        const hasUpdates = (await db.select<{ name: string }[]>("SELECT name FROM sqlite_master WHERE type='table' AND name='updates'")).length > 0;
-        const hasLocalFiles = (await db.select<{ name: string }[]>("SELECT name FROM sqlite_master WHERE type='table' AND name='local_files'")).length > 0;
-        const hasImages = (await db.select<{ name: string }[]>("SELECT name FROM sqlite_master WHERE type='table' AND name='civitai_images'")).length > 0;
-
-        if (hasUpdates || (hasLocalFiles && !hasImages)) {
-          console.log("[DBService] Old or Hybrid schema detected. Resetting database for full normalization...");
-          await db.execute("DROP TABLE IF EXISTS updates");
-          await db.execute("DROP TABLE IF EXISTS hashes");
-          await db.execute("DROP TABLE IF EXISTS local_files");
-          await db.execute("DROP TABLE IF EXISTS civitai_versions");
-          await db.execute("DROP TABLE IF EXISTS civitai_models");
-          await db.execute("DROP TABLE IF EXISTS civitai_model_tags");
-          await db.execute("DROP TABLE IF EXISTS civitai_version_words");
-          await db.execute("DROP TABLE IF EXISTS civitai_files");
-          await db.execute("DROP TABLE IF EXISTS civitai_images");
-        }
-
-        // 1. 로컬 파일 정보 (경로 중심)
-        await db.execute(`
-          CREATE TABLE IF NOT EXISTS local_files (
-            path TEXT PRIMARY KEY,
-            hash TEXT,
-            version_id INTEGER,
-            modified INTEGER,
-            stable_modified INTEGER,
-            preview_path TEXT,
-            info_path TEXT,
-            json_path TEXT,
-            is_not_found BOOLEAN DEFAULT 0,
-            image_fetch_failed BOOLEAN DEFAULT 0,
-            has_new_version BOOLEAN DEFAULT 0,
-            is_new_base BOOLEAN DEFAULT 0
-          );
-        `);
-
-        // 마이그레이션: 기존 테이블에 컬럼이 없는 경우 추가
-        try { await db.execute("ALTER TABLE local_files ADD COLUMN has_new_version BOOLEAN DEFAULT 0"); } catch(e) {}
-        try { await db.execute("ALTER TABLE local_files ADD COLUMN is_new_base BOOLEAN DEFAULT 0"); } catch(e) {}
-        try { await db.execute("ALTER TABLE local_files ADD COLUMN stable_modified INTEGER"); } catch(e) {}
-
-        // 2. Civitai 모델 정보
-        await db.execute(`
-          CREATE TABLE IF NOT EXISTS civitai_models (
-            id INTEGER PRIMARY KEY,
-            name TEXT,
-            description TEXT,
-            type TEXT,
-            allowNoCredit BOOLEAN,
-            allowCommercialUse TEXT,
-            allowDerivatives BOOLEAN,
-            allowDifferentLicense BOOLEAN,
-            nsfw BOOLEAN,
-            nsfwLevel INTEGER,
-            minor BOOLEAN,
-            poi BOOLEAN,
-            userId INTEGER,
-            availability TEXT,
-            stat_downloadCount INTEGER,
-            stat_thumbsUpCount INTEGER,
-            stat_thumbsDownCount INTEGER,
-            stat_commentCount INTEGER,
-            stat_tippedAmountCount INTEGER,
-            creator_username TEXT,
-            creator_image TEXT,
-            last_fetched_at TEXT
-          );
-        `);
-
-        await db.execute(`CREATE TABLE IF NOT EXISTS civitai_model_tags (model_id INTEGER, tag TEXT, PRIMARY KEY(model_id, tag))`);
-
-        // 3. Civitai 버전 정보
-        await db.execute(`
-          CREATE TABLE IF NOT EXISTS civitai_versions (
-            id INTEGER PRIMARY KEY,
-            model_id INTEGER,
-            name TEXT,
-            createdAt TEXT,
-            updatedAt TEXT,
-            publishedAt TEXT,
-            status TEXT,
-            baseModel TEXT,
-            baseModelType TEXT,
-            description TEXT,
-            availability TEXT,
-            nsfwLevel INTEGER,
-            stat_downloadCount INTEGER,
-            stat_thumbsUpCount INTEGER,
-            stat_thumbsDownCount INTEGER,
-            downloadUrl TEXT,
-            lookup_hash TEXT
-          );
-        `);
-
-        await db.execute(`CREATE TABLE IF NOT EXISTS civitai_version_words (version_id INTEGER, word TEXT, PRIMARY KEY(version_id, word))`);
-
-        await db.execute(`
-          CREATE TABLE IF NOT EXISTS civitai_files (
-            id INTEGER PRIMARY KEY,
-            version_id INTEGER,
-            sizeKB REAL,
-            name TEXT,
-            type TEXT,
-            pickleScanResult TEXT,
-            pickleScanMessage TEXT,
-            virusScanResult TEXT,
-            scannedAt TEXT,
-            meta_format TEXT,
-            meta_size TEXT,
-            meta_fp TEXT,
-            hash_AutoV1 TEXT,
-            hash_AutoV2 TEXT,
-            hash_SHA256 TEXT,
-            hash_CRC32 TEXT,
-            hash_BLAKE3 TEXT,
-            hash_AutoV3 TEXT,
-            downloadUrl TEXT,
-            is_primary BOOLEAN
-          );
-        `);
-
-        await db.execute(`
-          CREATE TABLE IF NOT EXISTS civitai_images (
-            url TEXT PRIMARY KEY,
-            version_id INTEGER,
-            nsfwLevel INTEGER,
-            width INTEGER,
-            height INTEGER,
-            hash TEXT,
-            type TEXT,
-            hasMeta BOOLEAN,
-            hasPositivePrompt BOOLEAN,
-            meta_json TEXT
-          );
-        `);
-
         return db;
       } catch (err: any) {
         console.error("[DBService] Critical Database Error:", err);
@@ -159,15 +31,172 @@ export class DBService {
       }
     })();
 
-    return this.dbPromise;
+    // 초기화 및 마이그레이션 로직도 runExclusive로 보호하기 위해 내부에서 처리하지 않고 
+    // 별도의 초기화 래퍼를 사용하거나, 첫 실행 시 보장해야 함.
+    // 여기서는 getDB가 처음 호출될 때 한 번만 실행되므로 안전함.
+    const db = await this.dbPromise;
+    
+    // 마이그레이션: 기존 구조(updates 테이블)나 하이브리드 구조(civitai_images 테이블 없음) 감지 시 초기화
+    const hasUpdates = (await db.select<{ name: string }[]>("SELECT name FROM sqlite_master WHERE type='table' AND name='updates'")).length > 0;
+    const hasLocalFiles = (await db.select<{ name: string }[]>("SELECT name FROM sqlite_master WHERE type='table' AND name='local_files'")).length > 0;
+    const hasImages = (await db.select<{ name: string }[]>("SELECT name FROM sqlite_master WHERE type='table' AND name='civitai_images'")).length > 0;
+
+    if (hasUpdates || (hasLocalFiles && !hasImages)) {
+      console.log("[DBService] Old or Hybrid schema detected. Resetting database for full normalization...");
+      await db.execute("DROP TABLE IF EXISTS updates");
+      await db.execute("DROP TABLE IF EXISTS hashes");
+      await db.execute("DROP TABLE IF EXISTS local_files");
+      await db.execute("DROP TABLE IF EXISTS civitai_versions");
+      await db.execute("DROP TABLE IF EXISTS civitai_models");
+      await db.execute("DROP TABLE IF EXISTS civitai_model_tags");
+      await db.execute("DROP TABLE IF EXISTS civitai_version_words");
+      await db.execute("DROP TABLE IF EXISTS civitai_files");
+      await db.execute("DROP TABLE IF EXISTS civitai_images");
+    }
+
+    // 1. 로컬 파일 정보 (경로 중심)
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS local_files (
+        path TEXT PRIMARY KEY,
+        hash TEXT,
+        version_id INTEGER,
+        modified INTEGER,
+        stable_modified INTEGER,
+        preview_path TEXT,
+        info_path TEXT,
+        json_path TEXT,
+        is_not_found BOOLEAN DEFAULT 0,
+        image_fetch_failed BOOLEAN DEFAULT 0,
+        has_new_version BOOLEAN DEFAULT 0,
+        is_new_base BOOLEAN DEFAULT 0
+      );
+    `);
+
+    // 마이그레이션: 기존 테이블에 컬럼이 없는 경우 추가
+    try { await db.execute("ALTER TABLE local_files ADD COLUMN has_new_version BOOLEAN DEFAULT 0"); } catch(e) {}
+    try { await db.execute("ALTER TABLE local_files ADD COLUMN is_new_base BOOLEAN DEFAULT 0"); } catch(e) {}
+    try { await db.execute("ALTER TABLE local_files ADD COLUMN stable_modified INTEGER"); } catch(e) {}
+
+    // 2. Civitai 모델 정보
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS civitai_models (
+        id INTEGER PRIMARY KEY,
+        name TEXT,
+        description TEXT,
+        type TEXT,
+        allowNoCredit BOOLEAN,
+        allowCommercialUse TEXT,
+        allowDerivatives BOOLEAN,
+        allowDifferentLicense BOOLEAN,
+        nsfw BOOLEAN,
+        nsfwLevel INTEGER,
+        minor BOOLEAN,
+        poi BOOLEAN,
+        userId INTEGER,
+        availability TEXT,
+        stat_downloadCount INTEGER,
+        stat_thumbsUpCount INTEGER,
+        stat_thumbsDownCount INTEGER,
+        stat_commentCount INTEGER,
+        stat_tippedAmountCount INTEGER,
+        creator_username TEXT,
+        creator_image TEXT,
+        last_fetched_at TEXT
+      );
+    `);
+
+    await db.execute(`CREATE TABLE IF NOT EXISTS civitai_model_tags (model_id INTEGER, tag TEXT, PRIMARY KEY(model_id, tag))`);
+
+    // 3. Civitai 버전 정보
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS civitai_versions (
+        id INTEGER PRIMARY KEY,
+        model_id INTEGER,
+        name TEXT,
+        createdAt TEXT,
+        updatedAt TEXT,
+        publishedAt TEXT,
+        status TEXT,
+        baseModel TEXT,
+        baseModelType TEXT,
+        description TEXT,
+        availability TEXT,
+        nsfwLevel INTEGER,
+        stat_downloadCount INTEGER,
+        stat_thumbsUpCount INTEGER,
+        stat_thumbsDownCount INTEGER,
+        downloadUrl TEXT,
+        lookup_hash TEXT
+      );
+    `);
+
+    await db.execute(`CREATE TABLE IF NOT EXISTS civitai_version_words (version_id INTEGER, word TEXT, PRIMARY KEY(version_id, word))`);
+
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS civitai_files (
+        id INTEGER PRIMARY KEY,
+        version_id INTEGER,
+        sizeKB REAL,
+        name TEXT,
+        type TEXT,
+        pickleScanResult TEXT,
+        pickleScanMessage TEXT,
+        virusScanResult TEXT,
+        scannedAt TEXT,
+        meta_format TEXT,
+        meta_size TEXT,
+        meta_fp TEXT,
+        hash_AutoV1 TEXT,
+        hash_AutoV2 TEXT,
+        hash_SHA256 TEXT,
+        hash_CRC32 TEXT,
+        hash_BLAKE3 TEXT,
+        hash_AutoV3 TEXT,
+        downloadUrl TEXT,
+        is_primary BOOLEAN
+      );
+    `);
+
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS civitai_images (
+        url TEXT PRIMARY KEY,
+        version_id INTEGER,
+        nsfwLevel INTEGER,
+        width INTEGER,
+        height INTEGER,
+        hash TEXT,
+        type TEXT,
+        hasMeta BOOLEAN,
+        hasPositivePrompt BOOLEAN,
+        meta_json TEXT
+      );
+    `);
+
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS error_logs (
+        id TEXT PRIMARY KEY,
+        timestamp TEXT,
+        method TEXT,
+        url TEXT,
+        status INTEGER,
+        message TEXT,
+        body TEXT,
+        headers TEXT,
+        target TEXT,
+        path TEXT
+      );
+    `);
+
+    return db;
   }
 
   // --- Local Files ---
 
   static async getLocalFile(path: string) {
-    const db = await this.getDB();
-    const rows = await db.select<any[]>("SELECT * FROM local_files WHERE path = $1", [path]);
-    return rows.length > 0 ? rows[0] : null;
+    return this.runExclusive(async (db) => {
+      const rows = await db.select<any[]>("SELECT * FROM local_files WHERE path = $1", [path]);
+      return rows.length > 0 ? rows[0] : null;
+    });
   }
 
   static async upsertLocalFile(params: {
@@ -184,61 +213,69 @@ export class DBService {
     hasNewVersion?: boolean;
     isNewBase?: boolean;
   }) {
-    const db = await this.getDB();
-    
-    // 만약 stable_modified가 제공되지 않았다면, 기존 값이 있는지 확인하여 유지하거나 현재 modified를 사용
-    let stableModified = params.stable_modified;
-    if (stableModified === undefined || stableModified === null) {
-      const existing = await this.getLocalFile(params.path);
-      stableModified = existing?.stable_modified || params.modified;
-    }
+    return this.runExclusive(async (db) => {
+      // 만약 stable_modified가 제공되지 않았다면, 기존 값이 있는지 확인하여 유지하거나 현재 modified를 사용
+      let stableModified = params.stable_modified;
+      if (stableModified === undefined || stableModified === null) {
+        const rows = await db.select<any[]>("SELECT stable_modified FROM local_files WHERE path = $1", [params.path]);
+        stableModified = (rows.length > 0 ? rows[0].stable_modified : null) || params.modified;
+      }
 
-    console.log(`[DBService] Upserting local file: ${params.path}`, { ...params, stable_modified: stableModified });
-    await db.execute(
-      `INSERT OR REPLACE INTO local_files 
-       (path, hash, version_id, modified, stable_modified, preview_path, info_path, json_path, is_not_found, image_fetch_failed, has_new_version, is_new_base) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-      [
-        params.path, 
-        params.hash || null, 
-        params.versionId || null, 
-        params.modified, 
-        stableModified,
-        params.preview_path || null, 
-        params.info_path || null, 
-        params.json_path || null, 
-        params.isNotFound ? 1 : 0,
-        params.imageFetchFailed ? 1 : 0,
-        params.hasNewVersion ? 1 : 0,
-        params.isNewBase ? 1 : 0
-      ]
-    );
+      console.log(`[DBService] Upserting local file: ${params.path}`, { ...params, stable_modified: stableModified });
+      await db.execute(
+        `INSERT OR REPLACE INTO local_files 
+         (path, hash, version_id, modified, stable_modified, preview_path, info_path, json_path, is_not_found, image_fetch_failed, has_new_version, is_new_base) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [
+          params.path, 
+          params.hash || null, 
+          params.versionId || null, 
+          params.modified, 
+          stableModified,
+          params.preview_path || null, 
+          params.info_path || null, 
+          params.json_path || null, 
+          params.isNotFound ? 1 : 0,
+          params.imageFetchFailed ? 1 : 0,
+          params.hasNewVersion ? 1 : 0,
+          params.isNewBase ? 1 : 0
+        ]
+      );
+    });
   }
 
   static async deleteLocalFile(path: string) {
-    const db = await this.getDB();
-    console.log(`[DBService] Deleting local file: ${path}`);
-    await db.execute("DELETE FROM local_files WHERE path = $1", [path]);
+    return this.runExclusive(async (db) => {
+      console.log(`[DBService] Deleting local file: ${path}`);
+      await db.execute("DELETE FROM local_files WHERE path = $1", [path]);
+    });
   }
 
   // --- Civitai Versions ---
 
   static async getCivitaiVersion(versionId: number): Promise<CivitaiModelVersion | null> {
-    const db = await this.getDB();
-    const rows = await db.select<any[]>("SELECT * FROM civitai_versions WHERE id = $1", [versionId]);
-    if (rows.length === 0) return null;
-    return this.buildVersionDTO(rows[0]);
+    return this.runExclusive(async (db) => {
+      const rows = await db.select<any[]>("SELECT * FROM civitai_versions WHERE id = $1", [versionId]);
+      if (rows.length === 0) return null;
+      return this.buildVersionDTOWithDB(db, rows[0]);
+    });
   }
 
   static async getCivitaiVersionByHash(hash: string): Promise<CivitaiModelVersion | null> {
-    const db = await this.getDB();
-    const rows = await db.select<any[]>("SELECT * FROM civitai_versions WHERE lookup_hash = $1", [hash]);
-    if (rows.length === 0) return null;
-    return this.buildVersionDTO(rows[0]);
+    return this.runExclusive(async (db) => {
+      const rows = await db.select<any[]>("SELECT * FROM civitai_versions WHERE lookup_hash = $1", [hash]);
+      if (rows.length === 0) return null;
+      return this.buildVersionDTOWithDB(db, rows[0]);
+    });
   }
 
   static async upsertCivitaiVersion(v: CivitaiModelVersion, lookupHash?: string) {
-    const db = await this.getDB();
+    return this.runExclusive(async (db) => {
+      await this.upsertCivitaiVersionInternal(db, v, lookupHash);
+    });
+  }
+
+  private static async upsertCivitaiVersionInternal(db: any, v: CivitaiModelVersion, lookupHash?: string) {
     const cleanDescription = v.description ? stripHtml(v.description) : null;
     console.log(`[DBService] Upserting version: ${v.id} (${v.name})`);
     await db.execute(
@@ -304,44 +341,46 @@ export class DBService {
   // --- Civitai Models ---
 
   static async getCivitaiModel(modelId: number): Promise<CivitaiModelResponse | null> {
-    const db = await this.getDB();
-    const rows = await db.select<any[]>("SELECT * FROM civitai_models WHERE id = $1", [modelId]);
-    if (rows.length === 0) return null;
-    return this.buildModelDTO(rows[0]);
+    return this.runExclusive(async (db) => {
+      const rows = await db.select<any[]>("SELECT * FROM civitai_models WHERE id = $1", [modelId]);
+      if (rows.length === 0) return null;
+      return this.buildModelDTOWithDB(db, rows[0]);
+    });
   }
 
   static async upsertCivitaiModel(m: CivitaiModelResponse) {
-    const db = await this.getDB();
-    const cleanDescription = m.description ? stripHtml(m.description) : "";
-    await db.execute(
-      `INSERT OR REPLACE INTO civitai_models 
-       (id, name, description, type, allowNoCredit, allowCommercialUse, allowDerivatives, allowDifferentLicense, nsfw, nsfwLevel, minor, poi, userId, availability, stat_downloadCount, stat_thumbsUpCount, stat_thumbsDownCount, stat_commentCount, stat_tippedAmountCount, creator_username, creator_image, last_fetched_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
-      [m.id, m.name, cleanDescription, m.type, m.allowNoCredit ? 1 : 0, Array.isArray(m.allowCommercialUse) ? m.allowCommercialUse.join(",") : m.allowCommercialUse, m.allowDerivatives ? 1 : 0, m.allowDifferentLicense ? 1 : 0, m.nsfw ? 1 : 0, m.nsfwLevel, m.minor ? 1 : 0, m.poi ? 1 : 0, m.userId, m.availability, m.stats?.downloadCount || 0, m.stats?.thumbsUpCount || 0, m.stats?.thumbsDownCount || 0, m.stats?.commentCount || 0, m.stats?.tippedAmountCount || 0, m.creator?.username, m.creator?.image || null, new Date().toISOString()]
-    );
+    return this.runExclusive(async (db) => {
+      const cleanDescription = m.description ? stripHtml(m.description) : "";
+      await db.execute(
+        `INSERT OR REPLACE INTO civitai_models 
+         (id, name, description, type, allowNoCredit, allowCommercialUse, allowDerivatives, allowDifferentLicense, nsfw, nsfwLevel, minor, poi, userId, availability, stat_downloadCount, stat_thumbsUpCount, stat_thumbsDownCount, stat_commentCount, stat_tippedAmountCount, creator_username, creator_image, last_fetched_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
+        [m.id, m.name, cleanDescription, m.type, m.allowNoCredit ? 1 : 0, Array.isArray(m.allowCommercialUse) ? m.allowCommercialUse.join(",") : m.allowCommercialUse, m.allowDerivatives ? 1 : 0, m.allowDifferentLicense ? 1 : 0, m.nsfw ? 1 : 0, m.nsfwLevel, m.minor ? 1 : 0, m.poi ? 1 : 0, m.userId, m.availability, m.stats?.downloadCount || 0, m.stats?.thumbsUpCount || 0, m.stats?.thumbsDownCount || 0, m.stats?.commentCount || 0, m.stats?.tippedAmountCount || 0, m.creator?.username, m.creator?.image || null, new Date().toISOString()]
+      );
 
-    // Tags
-    await db.execute("DELETE FROM civitai_model_tags WHERE model_id = $1", [m.id]);
-    if (m.tags && m.tags.length > 0) {
-      for (const tag of m.tags) {
-        await db.execute("INSERT INTO civitai_model_tags (model_id, tag) VALUES ($1, $2)", [m.id, tag]);
+      // Tags
+      await db.execute("DELETE FROM civitai_model_tags WHERE model_id = $1", [m.id]);
+      if (m.tags && m.tags.length > 0) {
+        for (const tag of m.tags) {
+          await db.execute("INSERT OR IGNORE INTO civitai_model_tags (model_id, tag) VALUES ($1, $2)", [m.id, tag]);
+        }
       }
-    }
 
-    // Versions
-    if (m.modelVersions && m.modelVersions.length > 0) {
-      for (const v of m.modelVersions) {
-        // 중요: API 응답에 따라 modelId가 누락될 수 있으므로 부모의 ID를 강제 할당
-        if (!v.modelId) v.modelId = m.id;
-        await this.upsertCivitaiVersion(v);
+      // Versions
+      if (m.modelVersions && m.modelVersions.length > 0) {
+        for (const v of m.modelVersions) {
+          // 중요: API 응답에 따라 modelId가 누락될 수 있으므로 부모의 ID를 강제 할당
+          if (!v.modelId) v.modelId = m.id;
+          // Internal 버전을 호출하여 데드락 방지
+          await this.upsertCivitaiVersionInternal(db, v);
+        }
       }
-    }
+    });
   }
 
   // --- Reconstruction Helpers ---
 
-  private static async buildVersionDTO(row: any): Promise<CivitaiModelVersion> {
-    const db = await this.getDB();
+  private static async buildVersionDTOWithDB(db: Database, row: any): Promise<CivitaiModelVersion> {
     const words = await db.select<{word: string}[]>("SELECT word FROM civitai_version_words WHERE version_id = $1", [row.id]);
     const files = await db.select<any[]>("SELECT * FROM civitai_files WHERE version_id = $1", [row.id]);
     const images = await db.select<any[]>("SELECT * FROM civitai_images WHERE version_id = $1", [row.id]);
@@ -397,11 +436,10 @@ export class DBService {
     };
   }
 
-  private static async buildModelDTO(row: any): Promise<CivitaiModelResponse> {
-    const db = await this.getDB();
+  private static async buildModelDTOWithDB(db: Database, row: any): Promise<CivitaiModelResponse> {
     const tags = await db.select<{tag: string}[]>("SELECT tag FROM civitai_model_tags WHERE model_id = $1", [row.id]);
     const versionsRows = await db.select<any[]>("SELECT * FROM civitai_versions WHERE model_id = $1 ORDER BY createdAt DESC", [row.id]);
-    const versions = await Promise.all(versionsRows.map(v => this.buildVersionDTO(v)));
+    const versions = await Promise.all(versionsRows.map(v => this.buildVersionDTOWithDB(db, v)));
 
     return {
       id: row.id,
@@ -437,139 +475,185 @@ export class DBService {
    * 모든 로컬 파일의 캐시 데이터를 가져와서 관계형 데이터를 병합하여 반환합니다.
    */
   static async getAllCachedData() {
-    const db = await this.getDB();
-    
-    // 로컬 파일 목록
-    const locals = await db.select<any[]>("SELECT * FROM local_files");
-    
-    // 관계형 데이터 벌크 로드
-    const modelsRaw = await db.select<any[]>("SELECT * FROM civitai_models");
-    const versionsRaw = await db.select<any[]>("SELECT * FROM civitai_versions");
-    const tagsRaw = await db.select<any[]>("SELECT * FROM civitai_model_tags");
-    const wordsRaw = await db.select<any[]>("SELECT * FROM civitai_version_words");
-    const filesRaw = await db.select<any[]>("SELECT * FROM civitai_files");
-    const imagesRaw = await db.select<any[]>("SELECT * FROM civitai_images");
+    return this.runExclusive(async (db) => {
+      // 로컬 파일 목록
+      const locals = await db.select<any[]>("SELECT * FROM local_files");
+      
+      // 관계형 데이터 벌크 로드
+      const modelsRaw = await db.select<any[]>("SELECT * FROM civitai_models");
+      const versionsRaw = await db.select<any[]>("SELECT * FROM civitai_versions");
+      const tagsRaw = await db.select<any[]>("SELECT * FROM civitai_model_tags");
+      const wordsRaw = await db.select<any[]>("SELECT * FROM civitai_version_words");
+      const filesRaw = await db.select<any[]>("SELECT * FROM civitai_files");
+      const imagesRaw = await db.select<any[]>("SELECT * FROM civitai_images");
 
-    // 매핑 맵 구축
-    const tagMap = new Map<number, string[]>();
-    tagsRaw.forEach(t => {
-      if (!tagMap.has(t.model_id)) tagMap.set(t.model_id, []);
-      tagMap.get(t.model_id)!.push(t.tag);
-    });
-
-    const wordMap = new Map<number, string[]>();
-    wordsRaw.forEach(w => {
-      if (!wordMap.has(w.version_id)) wordMap.set(w.version_id, []);
-      wordMap.get(w.version_id)!.push(w.word);
-    });
-
-    const fileMap = new Map<number, any[]>();
-    filesRaw.forEach(f => {
-      if (!fileMap.has(f.version_id)) fileMap.set(f.version_id, []);
-      fileMap.get(f.version_id)!.push({
-        id: f.id, sizeKB: f.sizeKB, name: f.name, type: f.type,
-        pickleScanResult: f.pickleScanResult, pickleScanMessage: f.pickleScanMessage,
-        virusScanResult: f.virusScanResult, scannedAt: f.scannedAt,
-        metadata: { format: f.meta_format, size: f.meta_size, fp: f.meta_fp },
-        hashes: { AutoV1: f.hash_AutoV1, AutoV2: f.hash_AutoV2, SHA256: f.hash_SHA256, CRC32: f.hash_CRC32, BLAKE3: f.hash_BLAKE3, AutoV3: f.hash_AutoV3 },
-        downloadUrl: f.downloadUrl, primary: !!f.is_primary
+      // 매핑 맵 구축
+      const tagMap = new Map<number, string[]>();
+      tagsRaw.forEach(t => {
+        if (!tagMap.has(t.model_id)) tagMap.set(t.model_id, []);
+        tagMap.get(t.model_id)!.push(t.tag);
       });
-    });
 
-    const imageMap = new Map<number, any[]>();
-    imagesRaw.forEach(img => {
-      if (!imageMap.has(img.version_id)) imageMap.set(img.version_id, []);
-      imageMap.get(img.version_id)!.push({
-        url: img.url, nsfwLevel: img.nsfwLevel, width: img.width, height: img.height,
-        hash: img.hash, type: img.type as "image" | "video", hasMeta: !!img.hasMeta, hasPositivePrompt: !!img.hasPositivePrompt,
-        meta: img.meta_json ? JSON.parse(img.meta_json) : null
+      const wordMap = new Map<number, string[]>();
+      wordsRaw.forEach(w => {
+        if (!wordMap.has(w.version_id)) wordMap.set(w.version_id, []);
+        wordMap.get(w.version_id)!.push(w.word);
       });
-    });
 
-    // 버전 객체 조립
-    const vMap = new Map<number, CivitaiModelVersion>();
-    versionsRaw.forEach(v => {
-      vMap.set(v.id, {
-        id: v.id, modelId: v.model_id, name: v.name, createdAt: v.createdAt, updatedAt: v.updatedAt,
-        publishedAt: v.publishedAt, status: v.status as "Published" | "Draft" | "Archived", 
-        baseModel: v.baseModel, baseModelType: v.baseModelType,
-        description: v.description, availability: v.availability as "Public" | "Private", nsfwLevel: v.nsfwLevel,
-        trainedWords: wordMap.get(v.id) || [],
-        stats: { downloadCount: v.stat_downloadCount, thumbsUpCount: v.stat_thumbsUpCount, thumbsDownCount: v.stat_thumbsDownCount },
-        files: fileMap.get(v.id) || [],
-        images: imageMap.get(v.id) || [],
-        downloadUrl: v.downloadUrl
+      const fileMap = new Map<number, any[]>();
+      filesRaw.forEach(f => {
+        if (!fileMap.has(f.version_id)) fileMap.set(f.version_id, []);
+        fileMap.get(f.version_id)!.push({
+          id: f.id, sizeKB: f.sizeKB, name: f.name, type: f.type,
+          pickleScanResult: f.pickleScanResult, pickleScanMessage: f.pickleScanMessage,
+          virusScanResult: f.virusScanResult, scannedAt: f.scannedAt,
+          metadata: { format: f.meta_format, size: f.meta_size, fp: f.meta_fp },
+          hashes: { AutoV1: f.hash_AutoV1, AutoV2: f.hash_AutoV2, SHA256: f.hash_SHA256, CRC32: f.hash_CRC32, BLAKE3: f.hash_BLAKE3, AutoV3: f.hash_AutoV3 },
+          downloadUrl: f.downloadUrl, primary: !!f.is_primary
+        });
       });
-    });
 
-    // 모델 객체 조립용 버전 그룹화
-    const mVersionMap = new Map<number, CivitaiModelVersion[]>();
-    vMap.forEach(v => {
-      if (!mVersionMap.has(v.modelId)) mVersionMap.set(v.modelId, []);
-      mVersionMap.get(v.modelId)!.push(v);
-    });
-
-    // 모델 객체 조립
-    const mMap = new Map<number, any>();
-    modelsRaw.forEach(m => {
-      const versions = mVersionMap.get(m.id) || [];
-      versions.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-      mMap.set(m.id, {
-        id: m.id, 
-        name: m.name, 
-        description: m.description, // DB의 평문 설명
-        type: m.type,
-        allowNoCredit: !!m.allowNoCredit,
-        allowCommercialUse: m.allowCommercialUse?.includes(",") ? m.allowCommercialUse.split(",") : m.allowCommercialUse,
-        allowDerivatives: !!m.allowDerivatives, allowDifferentLicense: !!m.allowDifferentLicense,
-        nsfw: !!m.nsfw, nsfwLevel: m.nsfwLevel, minor: !!m.minor, poi: !!m.poi,
-        userId: m.userId, availability: m.availability as "Public" | "Private",
-        stats: { downloadCount: m.stat_downloadCount, thumbsUpCount: m.stat_thumbsUpCount, thumbsDownCount: m.stat_thumbsDownCount, commentCount: m.stat_commentCount, tippedAmountCount: m.stat_tippedAmountCount },
-        creator: { username: m.creator_username, image: m.creator_image || undefined },
-        tags: tagMap.get(m.id) || [],
-        modelVersions: versions,
-        last_fetched_at: m.last_fetched_at
+      const imageMap = new Map<number, any[]>();
+      imagesRaw.forEach(img => {
+        if (!imageMap.has(img.version_id)) imageMap.set(img.version_id, []);
+        imageMap.get(img.version_id)!.push({
+          url: img.url, nsfwLevel: img.nsfwLevel, width: img.width, height: img.height,
+          hash: img.hash, type: img.type as "image" | "video", hasMeta: !!img.hasMeta, hasPositivePrompt: !!img.hasPositivePrompt,
+          meta: img.meta_json ? JSON.parse(img.meta_json) : null
+        });
       });
+
+      // 버전 객체 조립
+      const vMap = new Map<number, CivitaiModelVersion>();
+      versionsRaw.forEach(v => {
+        vMap.set(v.id, {
+          id: v.id, modelId: v.model_id, name: v.name, createdAt: v.createdAt, updatedAt: v.updatedAt,
+          publishedAt: v.publishedAt, status: v.status as "Published" | "Draft" | "Archived", 
+          baseModel: v.baseModel, baseModelType: v.baseModelType,
+          description: v.description, availability: v.availability as "Public" | "Private", nsfwLevel: v.nsfwLevel,
+          trainedWords: wordMap.get(v.id) || [],
+          stats: { downloadCount: v.stat_downloadCount, thumbsUpCount: v.stat_thumbsUpCount, thumbsDownCount: v.stat_thumbsDownCount },
+          files: fileMap.get(v.id) || [],
+          images: imageMap.get(v.id) || [],
+          downloadUrl: v.downloadUrl
+        });
+      });
+
+      // 모델 객체 조립용 버전 그룹화
+      const mVersionMap = new Map<number, CivitaiModelVersion[]>();
+      vMap.forEach(v => {
+        if (!mVersionMap.has(v.modelId)) mVersionMap.set(v.modelId, []);
+        mVersionMap.get(v.modelId)!.push(v);
+      });
+
+      // 모델 객체 조립
+      const mMap = new Map<number, any>();
+      modelsRaw.forEach(m => {
+        const versions = mVersionMap.get(m.id) || [];
+        versions.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+        mMap.set(m.id, {
+          id: m.id, 
+          name: m.name, 
+          description: m.description, // DB의 평문 설명
+          type: m.type,
+          allowNoCredit: !!m.allowNoCredit,
+          allowCommercialUse: m.allowCommercialUse?.includes(",") ? m.allowCommercialUse.split(",") : m.allowCommercialUse,
+          allowDerivatives: !!m.allowDerivatives, allowDifferentLicense: !!m.allowDifferentLicense,
+          nsfw: !!m.nsfw, nsfwLevel: m.nsfwLevel, minor: !!m.minor, poi: !!m.poi,
+          userId: m.userId, availability: m.availability as "Public" | "Private",
+          stats: { downloadCount: m.stat_downloadCount, thumbsUpCount: m.stat_thumbsUpCount, thumbsDownCount: m.stat_thumbsDownCount, commentCount: m.stat_commentCount, tippedAmountCount: m.stat_tippedAmountCount },
+          creator: { username: m.creator_username, image: m.creator_image || undefined },
+          tags: tagMap.get(m.id) || [],
+          modelVersions: versions,
+          last_fetched_at: m.last_fetched_at
+        });
+      });
+
+      const result: Record<string, any> = {};
+      for (const f of locals) {
+        const vData = f.version_id ? vMap.get(f.version_id) : null;
+        const mData = vData ? mMap.get(vData.modelId) : null;
+        const latestV = mData?.modelVersions?.[0] || vData;
+
+        result[f.path] = {
+          hash: f.hash,
+          modified: f.modified,
+          stableModified: f.stable_modified, // DB의 stable_modified를 반환 객체에 매핑
+          versionId: f.version_id,
+          currentVersionId: f.version_id,
+          latestVersionId: latestV?.id,
+          isNotFound: !!f.is_not_found,
+          imageFetchFailed: !!f.image_fetch_failed,
+          preview_path: f.preview_path,
+          info_path: f.info_path,
+          json_path: f.json_path,
+          
+          // 화면 표시용 필드 명시적 추가
+          modelName: mData?.name || vData?.model?.name,
+          currentVersion: vData?.name,
+          latestVersion: latestV?.name,
+          localReleaseDate: vData?.createdAt,
+          lastReleaseDate: latestV?.createdAt,
+          baseModel: latestV?.baseModel,
+          localBaseModel: vData?.baseModel,
+          hasNewVersion: !!f.has_new_version,
+          isNewBase: !!f.is_new_base,
+          
+          localVersionData: vData,
+          latestVersionData: latestV,
+          modelDescription: mData?.description, // mData.description에 이미 평문이 들어있음
+          civitaiUrl: mData ? `https://civitai.com/models/${mData.id}` : null,
+          lastFetchedAt: mData?.last_fetched_at
+        };
+      }
+      return result;
     });
+  }
 
-    const result: Record<string, any> = {};
-    for (const f of locals) {
-      const vData = f.version_id ? vMap.get(f.version_id) : null;
-      const mData = vData ? mMap.get(vData.modelId) : null;
-      const latestV = mData?.modelVersions?.[0] || vData;
+  // --- Error Logs ---
 
-      result[f.path] = {
-        hash: f.hash,
-        modified: f.modified,
-        stableModified: f.stable_modified, // DB의 stable_modified를 반환 객체에 매핑
-        versionId: f.version_id,
-        currentVersionId: f.version_id,
-        latestVersionId: latestV?.id,
-        isNotFound: !!f.is_not_found,
-        imageFetchFailed: !!f.image_fetch_failed,
-        preview_path: f.preview_path,
-        info_path: f.info_path,
-        json_path: f.json_path,
-        
-        // 화면 표시용 필드 명시적 추가
-        modelName: mData?.name || vData?.model?.name,
-        currentVersion: vData?.name,
-        latestVersion: latestV?.name,
-        localReleaseDate: vData?.createdAt,
-        lastReleaseDate: latestV?.createdAt,
-        baseModel: latestV?.baseModel,
-        localBaseModel: vData?.baseModel,
-        hasNewVersion: !!f.has_new_version,
-        isNewBase: !!f.is_new_base,
-        
-        localVersionData: vData,
-        latestVersionData: latestV,
-        modelDescription: mData?.description, // mData.description에 이미 평문이 들어있음
-        civitaiUrl: mData ? `https://civitai.com/models/${mData.id}` : null,
-        lastFetchedAt: mData?.last_fetched_at
-      };
-    }
-    return result;
+  static async saveErrorLog(log: any) {
+    return this.runExclusive(async (db) => {
+      await db.execute(
+        `INSERT OR REPLACE INTO error_logs 
+         (id, timestamp, method, url, status, message, body, headers, target, path)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          log.id, 
+          log.timestamp, 
+          log.method, 
+          log.url || null, 
+          log.status || null, 
+          log.message, 
+          log.body || null, 
+          log.headers ? JSON.stringify(log.headers) : null,
+          log.target || null,
+          log.path || null
+        ]
+      );
+    });
+  }
+
+  static async getErrorLogs() {
+    return this.runExclusive(async (db) => {
+      const rows = await db.select<any[]>("SELECT * FROM error_logs ORDER BY timestamp DESC");
+      return rows.map(row => ({
+        ...row,
+        headers: row.headers ? JSON.parse(row.headers) : undefined
+      }));
+    });
+  }
+
+  static async deleteErrorLog(id: string) {
+    return this.runExclusive(async (db) => {
+      await db.execute("DELETE FROM error_logs WHERE id = $1", [id]);
+    });
+  }
+
+  static async clearErrorLogs() {
+    return this.runExclusive(async (db) => {
+      await db.execute("DELETE FROM error_logs");
+    });
   }
 }

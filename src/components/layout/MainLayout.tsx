@@ -12,6 +12,8 @@ import { Toast } from "../ui/Toast";
 import { useToast } from "../../hooks/useToast";
 import { useErrorLogs } from "../../hooks/useErrorLogs";
 import { ModelWithStatus } from "../../types";
+import { useModelUpdate } from "../../hooks/useModelUpdate";
+import { useBatchUpdateContext } from "../../contexts/BatchUpdateContext";
 
 const ModelCardSkeleton = React.memo(() => (
   <div className="relative group rounded-[2rem] overflow-hidden bg-[#1f2937] border border-[#374151] shadow-2xl h-[450px] animate-pulse">
@@ -45,12 +47,57 @@ export const MainLayout: React.FC = () => {
     deferredSearchTerm, sortBy, sortOrder, 
     showOnlyOutdated, showOnlyDuplicates, selectedDirPath 
   } = useFilter();
-  const { toast, hideToast } = useToast();
-  const { logs, clearLogs } = useErrorLogs();
+  const { toast, hideToast, showNotification: showToast } = useToast();
+  const { logs, clearLogs, addLog, deleteLog } = useErrorLogs();
+  const { updateModelInfo } = useModelUpdate(addLog);
+  const { 
+    updateLatestVersionsInParallel, 
+    isUpdating: isBatchUpdating, 
+    updateStatus,
+    pauseBatchUpdate,
+    resumeBatchUpdate,
+    cancelBatchUpdate,
+    isPaused
+  } = useBatchUpdateContext();
   
   const [showSettings, setShowSettings] = useState(false);
   const [showLogViewer, setShowLogViewer] = useState(false);
   const [visibleCount, setVisibleCount] = useState(30);
+
+  const handleRetryUpdate = async (path: string) => {
+    const model = models.find(m => m.model_path === path);
+    if (!model) {
+      showToast("모델을 찾을 수 없습니다.", "error");
+      return;
+    }
+
+    showToast(`${model.name} 업데이트 재시도 중...`, "success");
+    try {
+      await updateModelInfo(model, { checkNewVersion: true, ignoreTTL: true });
+      showToast(`${model.name} 업데이트 확인 완료`, "success");
+    } catch (err) {
+      // 에러는 useModelUpdate 내부에서 addLog를 통해 처리됨
+    }
+  };
+
+  const handleRetryAllFailed = async (force: boolean) => {
+    const failedPaths = Array.from(new Set(logs.filter(l => l.path).map(l => l.path!)));
+    const failedModels = models.filter(m => failedPaths.includes(m.model_path));
+
+    if (failedModels.length === 0) {
+      showToast("재시도할 수 있는 실패한 모델이 없습니다.", "warning");
+      return;
+    }
+
+    if (isBatchUpdating) {
+      showToast("이미 업데이트가 진행 중입니다.", "warning");
+      return;
+    }
+
+    // 이제 로그 창을 닫지 않고 내부에서 상태를 보여줌
+    showToast(`${failedModels.length}개의 모델 업데이트 재시도 시작 (${force ? "강제" : "일반"})`, "success");
+    await updateLatestVersionsInParallel(failedModels, force);
+  };
 
   // 필터링 및 정렬 로직
   const filteredModels = useMemo(() => {
@@ -271,6 +318,20 @@ export const MainLayout: React.FC = () => {
         onClose={() => setShowLogViewer(false)} 
         logs={logs}
         onClear={clearLogs}
+        onDeleteLog={deleteLog}
+        onRetry={handleRetryUpdate}
+        onRetryAll={handleRetryAllFailed}
+        onPause={pauseBatchUpdate}
+        onResume={resumeBatchUpdate}
+        onCancel={cancelBatchUpdate}
+        isPaused={isPaused}
+        batchStatus={{
+          isUpdating: isBatchUpdating,
+          current: updateStatus.current,
+          total: updateStatus.total,
+          name: updateStatus.name,
+          task: updateStatus.task
+        }}
       />
       <Toast toast={toast} onClose={hideToast} />
     </div>

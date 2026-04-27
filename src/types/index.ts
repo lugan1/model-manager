@@ -74,4 +74,5 @@ export interface ErrorLog {
   body?: string;
   headers?: Record<string, string>;
   target?: string;
+  path?: string;
 }
