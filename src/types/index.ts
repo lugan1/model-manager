@@ -41,6 +41,7 @@ export interface ModelWithStatus extends ModelInfo {
   isNotFound?: boolean; // 서버에 정보가 없는 모델인지 여부
   imageFetchFailed?: boolean; // 추가: 프리뷰 이미지 다운로드 실패 여부
   currentTask?: string; // 현재 진행 중인 작업 상태
+  isInitializing?: boolean; // 추가: 초기 메타데이터 읽기 중 여부
 }
 
 export interface DownloadProgress {

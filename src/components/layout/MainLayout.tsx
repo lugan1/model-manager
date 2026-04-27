@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect } from "react";
-import { FolderOpen } from "lucide-react";
+import { FolderOpen, HardDrive, RefreshCw } from "lucide-react";
 import { Header } from "./Header";
 import { Sidebar } from "./Sidebar";
 import ModelCard from "../ModelCard";
@@ -12,6 +12,32 @@ import { Toast } from "../ui/Toast";
 import { useToast } from "../../hooks/useToast";
 import { useErrorLogs } from "../../hooks/useErrorLogs";
 import { ModelWithStatus } from "../../types";
+
+const ModelCardSkeleton = React.memo(() => (
+  <div className="relative group rounded-[2rem] overflow-hidden bg-[#1f2937] border border-[#374151] shadow-2xl h-[450px] animate-pulse">
+    <div className="absolute inset-0 bg-gradient-to-br from-[#374151]/50 to-[#1f2937]/50" />
+    <div className="absolute top-4 left-4 z-10">
+      <div className="h-6 w-16 bg-[#374151] rounded-lg"></div>
+    </div>
+    <div className="w-full h-full flex flex-col items-center justify-center gap-6 opacity-20">
+      <HardDrive className="size-24 text-[#9ca3af]" />
+    </div>
+    <div className="absolute inset-x-0 bottom-0 p-6 bg-gradient-to-t from-[#0b0f19] via-[#0b0f19]/90 to-transparent">
+      <div className="h-6 w-3/4 bg-[#374151] rounded mb-3"></div>
+      <div className="h-3 w-1/2 bg-[#374151] rounded mb-4"></div>
+      <div className="flex flex-col gap-3 mt-1">
+        <div className="flex flex-col gap-2 w-full">
+          <div className="w-full h-10 bg-[#374151]/50 rounded-xl border border-white/5"></div>
+        </div>
+      </div>
+      <div className="flex gap-2 mt-4">
+        <div className="flex-[0.7] h-14 bg-[#374151] rounded-xl"></div>
+        <div className="flex-[0.7] h-14 bg-[#374151] rounded-xl"></div>
+        <div className="flex-[1.5] h-14 bg-[#374151] rounded-xl"></div>
+      </div>
+    </div>
+  </div>
+));
 
 export const MainLayout: React.FC = () => {
   const { models, isScanning } = useModelContext();
@@ -100,16 +126,14 @@ export const MainLayout: React.FC = () => {
     }
   }, [filteredModels.length, deferredSearchTerm, selectedDirPath, sortBy, sortOrder]);
 
-  // 그룹화 로직 (visibleCount 적용)
+  // 그룹화 로직 (Layout Shift 방지를 위해 전체 항목 기준으로 그룹화)
   const groupedModels = useMemo(() => {
-    const visibleModels = filteredModels.slice(0, visibleCount);
-    
-    if (!selectedDirPath) return { "": visibleModels };
+    if (!selectedDirPath) return { "": filteredModels };
 
     const normalizedBase = normalizePath(selectedDirPath);
     const groups: Record<string, ModelWithStatus[]> = {};
 
-    visibleModels.forEach(m => {
+    filteredModels.forEach(m => {
       const normalizedPath = normalizePath(m.model_path);
       const relative = normalizedPath.substring(normalizedBase.length).replace(/^[\\\/]/, "");
       const parts = relative.split(/[\\\/]/);
@@ -131,7 +155,7 @@ export const MainLayout: React.FC = () => {
     });
 
     return sortedGroups;
-  }, [filteredModels, visibleCount, selectedDirPath]);
+  }, [filteredModels, selectedDirPath]);
 
   // 통계 계산
   const stats = useMemo(() => {
@@ -187,43 +211,48 @@ export const MainLayout: React.FC = () => {
           </div>
 
           <div className="flex-1 overflow-y-auto custom-scrollbar p-10">
-            {isScanning && filteredModels.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center gap-6">
-                <div className="relative">
-                  <div className="size-24 border-4 border-[#ff9a00]/20 border-t-[#ff9a00] rounded-full animate-spin"></div>
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <FolderOpen className="size-8 text-[#ff9a00] animate-pulse" />
-                  </div>
-                </div>
-                <p className="text-2xl font-black uppercase tracking-[0.2em] text-[#ff9a00]/60 animate-pulse">Scanning Models...</p>
+            {filteredModels.length === 0 && isScanning ? (
+              <div className="h-full flex flex-col items-center justify-center opacity-20">
+                <RefreshCw className="size-12 animate-spin mb-4 text-[#ff9a00]" />
+                <p className="text-xl font-black uppercase tracking-widest text-[#ff9a00]">Scanning Filesystem...</p>
               </div>
             ) : (
               <>
-                {Object.entries(groupedModels).map(([groupName, groupModels]) => (
-                  <div key={groupName} className="mb-16 last:mb-0">
-                    {groupName !== "" && (
-                      <div className="flex items-center gap-4 mb-8">
-                        <div className="h-[2px] flex-1 bg-gradient-to-r from-transparent via-[#374151] to-transparent"></div>
-                        <div className="flex items-center gap-3 px-6 py-2 bg-[#1f2937] border-2 border-[#374151] rounded-2xl shadow-xl">
-                          <FolderOpen className="size-5 text-[#ff9a00]" />
-                          <span className="text-xl font-black uppercase tracking-widest text-[#ff9a00]">
-                            {groupName === "." ? (selectedDirPath?.split(/[\\\/]/).pop() || "Root") : groupName}
-                          </span>
-                          <span className="bg-black/40 px-3 py-1 rounded-lg text-xs font-bold text-[#9ca3af]">
-                            {groupModels.length}
-                          </span>
-                        </div>
-                        <div className="h-[2px] flex-1 bg-gradient-to-r from-transparent via-[#374151] to-transparent"></div>
-                      </div>
-                    )}
+                {(() => {
+                  let renderedCount = 0;
+                  return Object.entries(groupedModels).map(([groupName, groupModels]) => {
+                    if (renderedCount >= visibleCount) return null;
                     
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-10">
-                      {groupModels.map(model => (
-                        <ModelCard key={model.model_path} model={model} />
-                      ))}
-                    </div>
-                  </div>
-                ))}
+                    const toRender = groupModels.slice(0, visibleCount - renderedCount);
+                    renderedCount += toRender.length;
+                    
+                    return (
+                      <div key={groupName} className="mb-16 last:mb-0">
+                        {groupName !== "" && (
+                          <div className="flex items-center gap-4 mb-8">
+                            <div className="h-[2px] flex-1 bg-gradient-to-r from-transparent via-[#374151] to-transparent"></div>
+                            <div className="flex items-center gap-3 px-6 py-2 bg-[#1f2937] border-2 border-[#374151] rounded-2xl shadow-xl">
+                              <FolderOpen className="size-5 text-[#ff9a00]" />
+                              <span className="text-xl font-black uppercase tracking-widest text-[#ff9a00]">
+                                {groupName === "." ? (selectedDirPath?.split(/[\\\/]/).pop() || "Root") : groupName}
+                              </span>
+                              <span className="bg-black/40 px-3 py-1 rounded-lg text-xs font-bold text-[#9ca3af]">
+                                {groupModels.length}
+                              </span>
+                            </div>
+                            <div className="h-[2px] flex-1 bg-gradient-to-r from-transparent via-[#374151] to-transparent"></div>
+                          </div>
+                        )}
+                        
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-10">
+                          {toRender.map(model => (
+                            <ModelCard key={model.model_path} model={model} />
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
 
                 {!isScanning && filteredModels.length === 0 && (
                   <div className="h-full flex flex-col items-center justify-center opacity-20 pointer-events-none">

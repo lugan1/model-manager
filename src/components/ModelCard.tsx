@@ -192,6 +192,34 @@ const ModelCard = memo(({ model }: Props) => {
   // 사용자의 요청에 따라 얼리 억세스 모델은 무조건 차단
   const disableDownload = isEarlyAccess;
 
+  if (model.isInitializing) {
+    return (
+      <div className="relative group rounded-[2rem] overflow-hidden bg-[#1f2937] border border-[#374151] shadow-2xl h-[450px] animate-pulse">
+        <div className="absolute inset-0 bg-gradient-to-br from-[#374151]/50 to-[#1f2937]/50" />
+        <div className="absolute top-4 left-4 z-10">
+          <div className="h-6 w-16 bg-[#374151] rounded-lg"></div>
+        </div>
+        <div className="w-full h-full flex flex-col items-center justify-center gap-6 opacity-20">
+          <HardDrive className="size-24 text-[#9ca3af]" />
+        </div>
+        <div className="absolute inset-x-0 bottom-0 p-6 bg-gradient-to-t from-[#0b0f19] via-[#0b0f19]/90 to-transparent">
+          <div className="h-6 w-3/4 bg-[#374151] rounded mb-3"></div>
+          <div className="h-3 w-1/2 bg-[#374151] rounded mb-4"></div>
+          <div className="flex flex-col gap-3 mt-1">
+            <div className="flex flex-col gap-2 w-full">
+              <div className="w-full h-10 bg-[#374151]/50 rounded-xl border border-white/5"></div>
+            </div>
+          </div>
+          <div className="flex gap-2 mt-4">
+            <div className="flex-[0.7] h-14 bg-[#374151] rounded-xl"></div>
+            <div className="flex-[0.7] h-14 bg-[#374151] rounded-xl"></div>
+            <div className="flex-[1.5] h-14 bg-[#374151] rounded-xl"></div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div 
       onClick={() => toggleModelSelection(model.model_path)}

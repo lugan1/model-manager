@@ -124,37 +124,10 @@ export const ModelProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       
       enriched = await applyUpdateCache(enriched);
 
-      // DB 캐시가 없는 모델 중 로컬 메타데이터 파일이 있는 경우 즉시 읽어서 보완
-      enriched = await Promise.all(enriched.map(async (m) => {
-        if (!m.modelName && (m.info_path || m.json_path)) {
-          try {
-            const metaPath = m.info_path || m.json_path;
-            if (metaPath) {
-              const content = await ModelService.readTextFile(metaPath);
-              const data = JSON.parse(content);
-              if (data) {
-                const modelName = data.model?.name || data.name || data.modelName;
-                const releaseDate = data.createdAt || data.publishedAt || data.updatedAt;
-                
-                return {
-                  ...m,
-                  modelName,
-                  currentVersion: data.name || data.version,
-                  localReleaseDate: releaseDate,
-                  lastReleaseDate: releaseDate,
-                  baseModel: data.baseModel,
-                  localBaseModel: data.baseModel,
-                  localVersionData: data,
-                  latestVersionData: data,
-                  civitaiUrl: data.modelId ? `https://civitai.com/models/${data.modelId}` : m.civitaiUrl
-                };
-              }
-            }
-          } catch (e) {
-            console.error(`[ModelContext] Failed to read local meta for ${m.name}:`, e);
-          }
-        }
-        return m;
+      // 캐시가 없는 모델 중 로컬 메타데이터 파일이 있는 경우 '초기화 중(개별 스켈레톤)' 표시 대상
+      enriched = enriched.map(m => ({
+        ...m,
+        isInitializing: !m.modelName && !!(m.info_path || m.json_path)
       }));
 
       // --- 중복 경로 클리닝 로직 추가 ---
@@ -176,12 +149,12 @@ export const ModelProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         Promise.all(duplicatePaths.map(path => DBService.deleteLocalFile(path))).catch(console.error);
       }
       
-      enriched = uniqueEnriched;
-      // --------------------------------
+      const finalInitialList = uniqueEnriched;
 
+      // 1단계: 즉시 리스트 반영 (정보가 없는 모델은 스켈레톤 상태로 노출됨)
       setModels(prev => {
         const existingMap = new Map(prev.map(m => [m.model_path, m]));
-        const updated = enriched.map(m => {
+        const updated = finalInitialList.map(m => {
           const ex = existingMap.get(m.model_path);
           if (ex) {
             if (ex.modified === m.modified && ex.size === m.size && ex.preview_path === m.preview_path) {
@@ -197,6 +170,40 @@ export const ModelProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const targetDir = normalizePath(specificPath);
         const filteredPrev = prev.filter(m => !normalizePath(m.model_path).startsWith(targetDir));
         return [...filteredPrev, ...updated];
+      });
+
+      // 2단계: 백그라운드에서 개별적으로 로컬 메타데이터(.info) 읽어서 보완
+      const initializationTargets = finalInitialList.filter(m => m.isInitializing);
+      
+      // 순차적으로 처리하여 과부하 방지 (또는 소규모 병렬)
+      initializationTargets.forEach(async (m) => {
+        try {
+          const metaPath = m.info_path || m.json_path;
+          if (metaPath) {
+            const content = await ModelService.readTextFile(metaPath);
+            const data = JSON.parse(content);
+            if (data) {
+              const modelName = data.model?.name || data.name || data.modelName;
+              const releaseDate = data.createdAt || data.publishedAt || data.updatedAt;
+              
+              patchModel(m.model_path, {
+                modelName,
+                currentVersion: data.name || data.version,
+                localReleaseDate: releaseDate,
+                lastReleaseDate: releaseDate,
+                baseModel: data.baseModel,
+                localBaseModel: data.baseModel,
+                localVersionData: data,
+                latestVersionData: data,
+                civitaiUrl: data.modelId ? `https://civitai.com/models/${data.modelId}` : m.civitaiUrl,
+                isInitializing: false // 초기화 완료
+              });
+            }
+          }
+        } catch (e) {
+          console.error(`[ModelContext] Failed to read local meta for ${m.name}:`, e);
+          patchModel(m.model_path, { isInitializing: false }); // 실패해도 스켈레톤은 해제
+        }
       });
       
       return result;
