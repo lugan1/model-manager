@@ -177,6 +177,9 @@ export const useModelUpdate = (addLog?: any, clearDownload?: (id: string) => voi
           if (model.info_path) await ModelService.writeTextFile(model.info_path, metaStr).catch(() => {});
           else await ModelService.writeTextFile(`${baseName}.civitai.info`, metaStr).catch(() => {});
 
+          if (model.json_path) await ModelService.writeTextFile(model.json_path, metaStr).catch(() => {});
+          else await ModelService.writeTextFile(`${baseName}.json`, metaStr).catch(() => {});
+
           const meta = { 
             modelName: data.model?.name,
             modelDescription: cleanModelDesc,

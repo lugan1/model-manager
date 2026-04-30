@@ -1,5 +1,4 @@
 use std::fs;
-use std::path::Path;
 use std::time::SystemTime;
 use jwalk::WalkDir;
 use tauri::command;
@@ -98,7 +97,7 @@ pub async fn calculate_model_hash(path: String) -> Result<String, String> {
     // --- Slow Path: Full File BLAKE3 Hashing ---
     file.seek(SeekFrom::Start(0)).await.map_err(|e| e.to_string())?;
     let mut hasher = blake3::Hasher::new();
-    let mut buffer = [0; 1024 * 1024]; 
+    let mut buffer = [0u8; 65536]; // 64KB buffer to avoid stack overflow (Windows default stack is 1MB)
     
     loop {
         let count = file.read(&mut buffer).await.map_err(|e| e.to_string())?;
