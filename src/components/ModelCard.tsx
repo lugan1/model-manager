@@ -24,10 +24,11 @@ const ModelCard = memo(({ model }: Props) => {
   const { downloads, clearDownload } = useDownloads();
   const { addLog } = useErrorLogs();
   const { startDownload } = useDownloadAction(clearDownload);
-  const { updateModelInfo } = useModelUpdate(addLog, clearDownload);
-  
+  const { updateModelInfo, updateModelFromUrl } = useModelUpdate(addLog, clearDownload);
+
   const [showMenu, setShowMenu] = useState(false);
   const [contextMenu, setContextMenu] = useState<{x: number, y: number} | null>(null);
+
   const [persistedTask, setPersistedTask] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -234,6 +235,7 @@ const ModelCard = memo(({ model }: Props) => {
           x={contextMenu.x} 
           y={contextMenu.y} 
           onClose={() => setContextMenu(null)} 
+          onUpdateUrl={updateModelFromUrl}
         />
       )}
       <div className="absolute top-0 right-0 z-30 flex items-start gap-2 p-3">

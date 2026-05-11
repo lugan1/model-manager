@@ -1,18 +1,24 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom";
 import { ModelWithStatus } from "../../types";
-import { X, Copy, Hash, Fingerprint, Info, ExternalLink, Sparkles, Terminal, Quote } from "lucide-react";
+import { X, Copy, Hash, Fingerprint, Info, ExternalLink, Sparkles, Terminal, Quote, Edit2, Save, Link, Loader2 } from "lucide-react";
 import { stripHtml } from "../../utils";
+import { useToast } from "../../hooks/useToast";
 
 interface ModelDetailsPopoverProps {
   model: ModelWithStatus;
   x: number;
   y: number;
   onClose: () => void;
+  onUpdateUrl?: (model: ModelWithStatus, url: string) => Promise<void>;
 }
 
-export const ModelDetailsPopover = ({ model, x, y, onClose }: ModelDetailsPopoverProps) => {
+export const ModelDetailsPopover = ({ model, x, y, onClose, onUpdateUrl }: ModelDetailsPopoverProps) => {
   const popoverRef = useRef<HTMLDivElement>(null);
+  const [isEditingUrl, setIsEditingUrl] = useState(false);
+  const [editedUrl, setEditedUrl] = useState(model.civitaiUrl || "");
+  const [isUpdating, setIsUpdating] = useState(false);
+  const { showNotification } = useToast();
 
   useEffect(() => {
     const handleMouseDown = (e: MouseEvent) => {
@@ -26,6 +32,20 @@ export const ModelDetailsPopover = ({ model, x, y, onClose }: ModelDetailsPopove
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
+  };
+
+  const handleUpdateUrl = async () => {
+    if (!onUpdateUrl || !editedUrl.trim()) return;
+    setIsUpdating(true);
+    try {
+      await onUpdateUrl(model, editedUrl.trim());
+      showNotification("URL 수정 완료", "입력한 URL 주소로 모델 정보가 갱신되었습니다.", "success");
+      setIsEditingUrl(false);
+    } catch (err: any) {
+      showNotification("URL 수정 실패", err.message || "URL을 변경하는 중 오류가 발생했습니다.", "error");
+    } finally {
+      setIsUpdating(false);
+    }
   };
 
   const modelId = model.latestVersionData?.modelId || model.localVersionData?.modelId;
@@ -184,19 +204,59 @@ export const ModelDetailsPopover = ({ model, x, y, onClose }: ModelDetailsPopove
         </div>
       </div>
 
-      {model.civitaiUrl && (
-        <div className="p-4 bg-[#1f2937]/30 border-t border-[#374151]">
-          <a 
-            href={model.civitaiUrl} 
-            target="_blank" 
-            rel="noreferrer"
-            className="flex items-center justify-center gap-2 w-full py-3 bg-cyan-600 hover:bg-cyan-500 text-white rounded-xl text-xs font-black transition-all"
-          >
-            <ExternalLink className="size-3" />
-            CIVITAI 페이지 방문
-          </a>
-        </div>
-      )}
+      <div className="p-4 bg-[#1f2937]/30 border-t border-[#374151] space-y-3">
+        {isEditingUrl ? (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 bg-black/40 rounded-xl border border-white/10 p-1 pl-3">
+              <Link className="size-3.5 text-gray-500" />
+              <input
+                autoFocus
+                type="text"
+                value={editedUrl}
+                onChange={(e) => setEditedUrl(e.target.value)}
+                placeholder="https://civitai.com/models/..."
+                className="flex-1 bg-transparent border-none text-[11px] text-white focus:ring-0 py-2 outline-none"
+              />
+              <button
+                disabled={isUpdating}
+                onClick={handleUpdateUrl}
+                className="p-2 bg-cyan-600 hover:bg-cyan-500 disabled:bg-gray-700 text-white rounded-lg transition-all"
+              >
+                {isUpdating ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
+              </button>
+              <button
+                disabled={isUpdating}
+                onClick={() => setIsEditingUrl(false)}
+                className="p-2 hover:bg-white/10 text-gray-400 rounded-lg transition-all"
+              >
+                <X className="size-3.5" />
+              </button>
+            </div>
+            <p className="text-[9px] text-gray-500 px-1">올바른 Civitai 모델 주소를 입력하면 정보가 강제로 업데이트됩니다.</p>
+          </div>
+        ) : (
+          <div className="flex gap-2">
+            {model.civitaiUrl && (
+              <a 
+                href={model.civitaiUrl} 
+                target="_blank" 
+                rel="noreferrer"
+                className="flex-1 flex items-center justify-center gap-2 py-3 bg-[#374151] hover:bg-[#4b5563] text-white rounded-xl text-xs font-black transition-all"
+              >
+                <ExternalLink className="size-3" />
+                CIVITAI 방문
+              </a>
+            )}
+            <button
+              onClick={() => setIsEditingUrl(true)}
+              className={`${model.civitaiUrl ? "px-4" : "w-full"} py-3 bg-cyan-600 hover:bg-cyan-500 text-white rounded-xl text-xs font-black transition-all flex items-center justify-center gap-2`}
+            >
+              <Edit2 className="size-3" />
+              URL 수정
+            </button>
+          </div>
+        )}
+      </div>
     </div>,
     document.body
   );

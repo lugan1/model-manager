@@ -21,6 +21,18 @@ export class CivitaiService {
   }
 
   /**
+   * 버전 ID로 모델 버전 정보 조회
+   */
+  static async getModelVersion(versionId: number) {
+    await this.apiSemaphore.acquire();
+    try {
+      return await apiClient.fetch(`${this.BASE_URL}/model-versions/${versionId}`);
+    } finally {
+      this.apiSemaphore.release();
+    }
+  }
+
+  /**
    * 해시값으로 모델 버전 정보 조회
    */
   static async getModelVersionByHash(hash: string) {

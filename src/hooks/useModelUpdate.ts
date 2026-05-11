@@ -351,5 +351,130 @@ export const useModelUpdate = (addLog?: any, clearDownload?: (id: string) => voi
     }
   }, [patchModel, updateTTL, addLog]);
 
-  return { updateModelInfo };
+  const updateModelFromUrl = useCallback(async (model: ModelWithStatus, url: string) => {
+    const updateTask = (task: string) => patchModel(model.model_path, { currentTask: task });
+    updateTask("수동 URL 업데이트 중...");
+
+    try {
+      // 1. URL 파싱
+      const match = url.match(/models\/(\d+)/);
+      if (!match) throw new Error("유효한 Civitai URL이 아닙니다.");
+      const modelId = Number(match[1]);
+      
+      const versionMatch = url.match(/modelVersionId=(\d+)/);
+      const versionId = versionMatch ? Number(versionMatch[1]) : null;
+
+      // 2. 모델 상세 정보 조회
+      const fullModel = await CivitaiService.getModel(modelId).catch(() => null) as CivitaiModelResponse | null;
+      if (!fullModel) throw new Error("모델 정보를 가져오지 못했습니다.");
+      
+      // 3. 버전 정보 조회 (없으면 첫 번째 버전)
+      let targetVersionId = versionId;
+      if (!targetVersionId) {
+        targetVersionId = fullModel.modelVersions?.[0]?.id;
+      }
+      if (!targetVersionId) throw new Error("버전 정보를 찾을 수 없습니다.");
+
+      const data = await CivitaiService.getModelVersion(targetVersionId) as CivitaiModelVersion;
+      if (!data) throw new Error("버전 상세 정보를 가져오지 못했습니다.");
+
+      await DBService.upsertCivitaiModel(fullModel);
+      
+      data.model = {
+        name: fullModel.name,
+        description: fullModel.description,
+        type: fullModel.type,
+        nsfw: fullModel.nsfw,
+        userId: fullModel.userId
+      };
+
+      await DBService.upsertCivitaiVersion(data);
+
+      const modelDesc = fullModel.description || "";
+      const cleanModelDesc = stripHtml(modelDesc);
+      const versionNotes = data.description ? stripHtml(data.description) : "";
+
+      const civitaiUrl = `https://civitai.com/models/${modelId}?modelVersionId=${targetVersionId}`;
+      const notesContent = `URL: ${civitaiUrl}\n\n[MODEL DESCRIPTION]\n${cleanModelDesc}\n\n[VERSION NOTES]\n${versionNotes}`;
+      
+      const enrichedData = {
+        ...data,
+        "description": cleanModelDesc || versionNotes,
+        "modelDescription": cleanModelDesc,
+        "notes": notesContent.trim(),
+        "modelId": modelId,
+        "civitai_model_id": modelId,
+        "url": civitaiUrl,
+        "civitaiUrl": civitaiUrl,
+        "source": civitaiUrl,
+        "activation text": (data.trainedWords || []).join("\n"),
+        "preferred weight": 1.0,
+        "sd version": data.baseModel
+      };
+      
+      // ReForge/Python 환경(cp949 인코딩)과의 호환성을 위해 비-ASCII 문자를 유니코드 시퀀스로 변환하여 저장
+      const metaStr = escapeUnicode(JSON.stringify(enrichedData, null, 2));
+      const baseName = model.model_path.replace(/\.(safetensors|ckpt)$/i, "");
+      
+      if (model.info_path) await ModelService.writeTextFile(model.info_path, metaStr).catch(() => {});
+      else await ModelService.writeTextFile(`${baseName}.civitai.info`, metaStr).catch(() => {});
+
+      if (model.json_path) await ModelService.writeTextFile(model.json_path, metaStr).catch(() => {});
+      else await ModelService.writeTextFile(`${baseName}.json`, metaStr).catch(() => {});
+
+      // 4. DB 및 UI 상태 업데이트
+      const currentHash = model.hash || await ModelService.getModelHash(model.model_path, model.modified);
+      const updateMeta = {
+        modelName: fullModel.name,
+        modelDescription: cleanModelDesc,
+        currentVersion: data.name,
+        currentVersionId: data.id,
+        localVersionData: data,
+        localBaseModel: data.baseModel,
+        localPreviewUrl: data.images?.[0]?.url,
+        localReleaseDate: data.createdAt,
+        civitaiUrl: `https://civitai.com/models/${modelId}`,
+        baseModel: data.baseModel,
+        latestVersion: fullModel.modelVersions?.[0]?.name || data.name,
+        latestVersionId: fullModel.modelVersions?.[0]?.id || data.id,
+        latestVersionData: fullModel.modelVersions?.[0] || data,
+        previewUrl: data.images?.[0]?.url,
+        lastReleaseDate: data.createdAt,
+        lastFetchedAt: new Date().toISOString(),
+        isNotFound: false,
+        modified: model.modified,
+        hash: currentHash,
+        hasNewVersion: false,
+        isNewBase: false,
+        currentTask: "IDLE: 수동 업데이트 완료"
+      };
+
+      await DBService.upsertLocalFile({
+        path: model.model_path,
+        modified: model.modified,
+        versionId: data.id,
+        hash: currentHash,
+        preview_path: model.preview_path,
+        info_path: model.info_path || `${baseName}.civitai.info`,
+        json_path: model.json_path || `${baseName}.json`,
+        isNotFound: false
+      });
+
+      patchModel(model.model_path, updateMeta);
+
+    } catch (e: any) {
+      const errorMsg = normalizeError(e);
+      addLog?.({
+        method: "MANUAL_UPDATE",
+        target: model.name,
+        path: model.model_path,
+        message: errorMsg,
+        status: e.status
+      });
+      updateTask(`IDLE: URL 업데이트 오류 (${errorMsg})`);
+      throw e; // UI에서 에러를 인지할 수 있도록 다시 던짐
+    }
+  }, [patchModel, addLog]);
+
+  return { updateModelInfo, updateModelFromUrl };
 };
